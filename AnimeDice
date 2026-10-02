@@ -65,22 +65,46 @@ local function autoTrade(itemName)
 	return true
 end
 
+-- Check if already in a trade
+local function isInTrade()
+	local gui = player:FindFirstChild("PlayerGui")
+	if not gui then return false end
+	
+	-- Look for trade UI elements (Ready/Decline buttons indicate active trade)
+	for _, descendant in pairs(gui:GetDescendants()) do
+		if descendant:IsA("TextButton") then
+			if descendant.Text == "Ready" or descendant.Text == "Decline" then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 -- Main trading loop
 local itemsToTrade = {
 	"Trait Reroll",
 	"Gems",
 	"Lucky Spin",
+	"Luck Potion",
 }
 
 for _, itemName in ipairs(itemsToTrade) do
 	local tradeCount = 0
 	while true do
+		-- Check if already in a trade
+		if isInTrade() then
+			print("[WAIT] Already in active trade, waiting...")
+			wait(5)
+			break -- Exit loop for this item and move to next
+		end
+		
 		local success = autoTrade(itemName)
 		
 		if success then
 			tradeCount = tradeCount + 1
 			print("[LOOP] " .. itemName .. " trade #" .. tradeCount .. " completed")
-			wait(3)
+			wait(5) -- Wait longer between trades to let target accept
 		else
 			print("[NEXT] Moving to next item after " .. tradeCount .. " " .. itemName .. " trades")
 			break
