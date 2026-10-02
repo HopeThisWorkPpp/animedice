@@ -1,5 +1,5 @@
 -- Anime Dice Auto-Trade (auto-inventory version)
--- Reads your actual inventory, sends Celestial+ units + consumables in one trade
+-- Reads your actual inventory, sends target-rarity units + consumables in one trade
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -7,8 +7,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TARGET_NAME = "only1Sherifalt1"
 local ADD_DELAY = 0.6
 
--- Rarity tiers to send (in order of preference)
+-- Rarity tiers to send (in order of preference) — must match entryConfig.rarity strings exactly
 local RARITY_TIERS = { "Mythic", "Secret II", "Secret I", "Celestial" }
+local RARITY_ACCEPT = {}
+for _, r in ipairs(RARITY_TIERS) do RARITY_ACCEPT[r] = true end
 
 print("[START] Waiting 3s...")
 task.wait(3)
@@ -19,7 +21,6 @@ if not target then
 	return
 end
 
--- Get the DataController and inventory
 local RS = ReplicatedStorage
 local ok, DataController = pcall(require, RS.Framework.Features.Data.DataController)
 if not ok then
@@ -27,13 +28,14 @@ if not ok then
 	return
 end
 
--- Try to find the inventory table in memory
+-- Find the real inventory table (name/attributes/amount shape)
 local inventory = nil
 if getgc then
 	for _, t in ipairs(getgc(true)) do
 		if type(t) == "table" and rawget(t, "Inventory") then
-			inventory = rawget(t, "Inventory")
-			if type(inventory) == "table" and rawget(inventory, "Luck III") then
+			local candidate = rawget(t, "Inventory")
+			if type(candidate) == "table" and rawget(candidate, "Luck III") then
+				inventory = candidate
 				print("[FOUND] Inventory located")
 				break
 			end
@@ -45,6 +47,41 @@ if not inventory then
 	warn("[ERROR] Could not find inventory in memory")
 	return
 end
+
+-- Find the master unit config table (name -> { entryConfig = { rarity = ... } })
+local UnitConfigs = nil
+if getgc then
+	for _, t in ipairs(getgc(true)) do
+		if type(t) == "table" and rawget(t, "entries") and rawget(t, "stackable") ~= nil then
+			local entries = rawget(t, "entries")
+			if type(entries) == "table" then
+				for _, cfg in pairs(entries) do
+					if type(cfg) == "table"
+						and type(rawget(cfg, "entryConfig")) == "table"
+						and rawget(rawget(cfg, "entryConfig"), "rarity") then
+						UnitConfigs = entries
+						break
+					end
+				end
+			end
+		end
+		if UnitConfigs then break end
+	end
+end
+
+if not UnitConfigs then
+	warn("[ERROR] Could not find unit rarity config table — aborting rather than sending unknown-rarity units")
+	return
+end
+
+-- Build name -> rarity lookup
+local RARITY_LOOKUP = {}
+for name, cfg in pairs(UnitConfigs) do
+	if type(cfg) == "table" and type(cfg.entryConfig) == "table" and cfg.entryConfig.rarity then
+		RARITY_LOOKUP[name] = cfg.entryConfig.rarity
+	end
+end
+print("[FOUND] Rarity lookup built with " .. (function() local n=0 for _ in pairs(RARITY_LOOKUP) do n=n+1 end return n end)() .. " entries")
 
 -- Get remotes
 local network = RS:FindFirstChild("Network")
@@ -63,27 +100,24 @@ if not (RequestTrade and ChangeOffer and AdvanceTrade) then
 	return
 end
 
--- Collect items to trade
 local toTrade = {}
 
--- 1) Add high-rarity units
-print("[SCAN] Looking for Celestial+ units...")
+-- 1) Add units matching target rarity tiers
+print("[SCAN] Looking for " .. table.concat(RARITY_TIERS, "/") .. " units...")
 local unitCount = 0
 for uuid, item in pairs(inventory) do
-	if type(item) == "table" and item.name and not (type(uuid) == "string" and uuid:find("^[A-Z]")) then
-		-- It's likely a unit (UUID key, not a string name like "Luck III")
-		-- We need to check rarity, but rarity is in the UI structure, not the inventory item itself
-		-- So we'll just add all non-consumable items that look like units
-		if uuid:match("^[0-9a-f%-]+$") then
+	if type(item) == "table" and item.name and type(uuid) == "string" and uuid:match("^[0-9a-f%-]+$") then
+		local rarity = RARITY_LOOKUP[item.name]
+		if rarity and RARITY_ACCEPT[rarity] then
 			table.insert(toTrade, {uuid, 1})
 			unitCount = unitCount + 1
-			if unitCount <= 3 then print("  [UNIT] " .. item.name) end
+			print("  [UNIT] " .. item.name .. " (" .. rarity .. ")")
 		end
 	end
 end
-print("[SCAN] Found " .. unitCount .. " units")
+print("[SCAN] Found " .. unitCount .. " matching units")
 
--- 2) Add consumables (check what you actually have)
+-- 2) Add consumables
 local consumables = {"Trait Reroll", "Gems", "Lucky Spin", "Luck IV", "Luck III", "Luck II", "Luck I"}
 print("[SCAN] Looking for consumables...")
 for _, cname in ipairs(consumables) do
@@ -99,12 +133,10 @@ if #toTrade == 0 then
 	return
 end
 
--- Open trade
 print("[TRADE] Requesting trade with " .. #toTrade .. " items...")
 RequestTrade:FireServer(target)
 task.wait(3)
 
--- Add each item
 for _, item in ipairs(toTrade) do
 	local key, qty = item[1], item[2]
 	local ok, err = pcall(function()
@@ -115,7 +147,6 @@ for _, item in ipairs(toTrade) do
 	task.wait(ADD_DELAY)
 end
 
--- Ready up
 task.wait(1)
 AdvanceTrade:FireServer()
 print("[DONE] Trade advanced")
