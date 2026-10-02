@@ -1,131 +1,255 @@
--- Anime Dice Auto-Trade (Full — Gems + Items + All Units)
+--[[
+    Anime Dice Auto-Trade (UI CLICKING VERSION)
+    Clicks actual buttons instead of firing remotes
+]]
+
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 
 -- ===== CONFIG =====
 local TARGET_NAME = "only1Sherifalt1"
-local STEP_DELAY = 2
-local TRADE_DELAY = 5
+local STEP_DELAY  = 1.5
+local TRADE_DELAY = 4
 
-local TRADE_LIST = {
-    -- Currency & Items
-    { Name = "Trait Reroll", Amount = 1    },
-    { Name = "Gems",         Amount = 1000 },
-    { Name = "Lucky Spin",   Amount = 1    },
-    { Name = "Luck Potion",  Amount = 1    },
-
-    -- Units (from wiki)
-    { Name = "Hasoka",           Amount = 1 },
-    { Name = "Itacha",           Amount = 1 },
-    { Name = "Thorfyn",          Amount = 1 },
-    { Name = "Arin",             Amount = 1 },
-    { Name = "Mikasu",           Amount = 1 },
-    { Name = "Mobb",             Amount = 1 },
-    { Name = "UI Goko",          Amount = 1 },
-    { Name = "Deko",             Amount = 1 },
-    { Name = "Bakuga",           Amount = 1 },
-    { Name = "Todoraki",         Amount = 1 },
-    { Name = "Zaro",             Amount = 1 },
-    { Name = "Sakuna",           Amount = 1 },
-    { Name = "Madera",           Amount = 1 },
-    { Name = "Maheto",           Amount = 1 },
-    { Name = "Enol",             Amount = 1 },
-    { Name = "Todoh",            Amount = 1 },
-    { Name = "Super Saiyen Goko", Amount = 1 },
-    -- Add any others from the wiki you want here
+-- Items to try (matching what's shown in the trade UI / inventory)
+local ITEMS_TO_TRADE = {
+    { Name = "Trait Reroll", Amount = "1"    },
+    { Name = "Gems",         Amount = "1k"   },
+    { Name = "Lucky Spin",   Amount = "1"    },
+    { Name = "Luck Potion",  Amount = "1"    },
 }
 
--- ===== SETUP =====
-local TradeService = ReplicatedStorage:WaitForChild("Network")
-    :WaitForChild("TradeService"):WaitForChild("RE")
-
-local RequestTrade = TradeService:WaitForChild("RequestTrade")
-local ChangeOffer  = TradeService:WaitForChild("ChangeOffer")
-local AdvanceTrade = TradeService:WaitForChild("AdvanceTrade")
-
-local function findTarget()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Name:lower() == TARGET_NAME:lower() then return p end
-    end
+-- ===== CLICK HELPERS =====
+local function clickButton(btn)
+    if not btn then return false end
+    -- Try every possible click method
+    local ok = pcall(function()
+        if firesignal then
+            firesignal(btn.MouseButton1Click)
+        elseif btn.Activate then
+            btn:Activate()
+        else
+            btn.MouseButton1Click:Fire()
+        end
+    end)
+    return ok
 end
 
-local function isTradeOpen()
-    local gui = player:FindFirstChild("PlayerGui")
-    if not gui then return false end
-    for _, d in ipairs(gui:GetDescendants()) do
-        if d:IsA("TextButton") and (d.Text == "Ready" or d.Text == "Decline") then
+-- Find a button by its exact text (searches entire PlayerGui)
+local function findButton(text)
+    local pg = player:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    for _, d in ipairs(pg:GetDescendants()) do
+        if (d:IsA("TextButton") or d:IsA("ImageButton")) and d.Visible then
+            if d:IsA("TextButton") and d.Text == text then
+                return d
+            end
+            -- Some buttons have a TextLabel child with the text
+            local lbl = d:FindFirstChildWhichIsA("TextLabel")
+            if lbl and lbl.Text == text then return d end
+        end
+    end
+    return nil
+end
+
+-- Find button whose text CONTAINS a keyword (case insensitive)
+local function findButtonContains(keyword)
+    local pg = player:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local kw = keyword:lower()
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("TextButton") and d.Visible then
+            if d.Text:lower():find(kw, 1, true) then
+                return d
+            end
+        end
+    end
+    return nil
+end
+
+-- Find the trade window frame
+local function findTradeWindow()
+    local pg = player:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    -- Trade windows usually have Ready/Decline buttons
+    local ready = findButton("Ready")
+    if ready then
+        -- Walk up to find the main frame
+        local f = ready.Parent
+        while f and f ~= pg do
+            if f:IsA("Frame") and f.AbsoluteSize.X > 200 then
+                return f
+            end
+            f = f.Parent
+        end
+    end
+    return nil
+end
+
+-- Find item in inventory (by name text inside an item frame)
+local function findInventoryItem(itemName)
+    local pg = player:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local target = itemName:lower()
+    for _, d in ipairs(pg:GetDescendants()) do
+        if d:IsA("TextLabel") and d.Visible then
+            if d.Text:lower():find(target, 1, true) then
+                -- Found the label — return the clickable parent
+                local p = d.Parent
+                while p and p ~= pg do
+                    if p:IsA("TextButton") or p:IsA("ImageButton") then
+                        return p
+                    end
+                    -- Sometimes it's a Frame with a button inside
+                    local btn = p:FindFirstChildWhichIsA("TextButton")
+                    if btn then return btn end
+                    p = p.Parent
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- ===== MAIN LOGIC =====
+local function waitForTradeOpen(timeout)
+    local t = 0
+    while t < timeout do
+        if findButton("Ready") or findButton("Decline") then
             return true
         end
+        task.wait(0.25); t = t + 0.25
     end
     return false
 end
 
-local function waitForClose(timeout)
+local function waitForTradeClose(timeout)
     local t = 0
-    while isTradeOpen() and t < timeout do
-        task.wait(0.5); t = t + 0.5
+    while t < timeout do
+        if not (findButton("Ready") or findButton("Decline")) then
+            return true
+        end
+        task.wait(0.25); t = t + 0.25
     end
-    return not isTradeOpen()
+    return false
 end
 
-local function autoTrade(itemName, amount)
-    local target = findTarget()
-    if not target then
-        warn("[TRADE] Alt not in server")
+local function doTrade(itemName, amountLabel)
+    print(("[TRADE] %s (%s)"):format(itemName, amountLabel))
+
+    -- Step 1: Open trade window
+    -- Try clicking a "Trade" button first
+    local tradeBtn = findButton("Trade") 
+        or findButtonContains("trade")
+    if tradeBtn then
+        clickButton(tradeBtn)
+        task.wait(STEP_DELAY)
+    end
+
+    -- Look for the target's name in a player list within the trade UI
+    local targetBtn = findButton(TARGET_NAME) 
+        or findButtonContains(TARGET_NAME)
+    if targetBtn then
+        print("[TRADE] Clicking target player:", TARGET_NAME)
+        clickButton(targetBtn)
+        task.wait(STEP_DELAY)
+    end
+
+    if not waitForTradeOpen(8) then
+        warn("[TRADE] Trade window didn't open")
         return false
     end
+    print("[TRADE] Window open")
 
-    if isTradeOpen() then
-        print("[TRADE] Waiting for existing trade to close...")
-        waitForClose(20)
-        task.wait(1)
-    end
-
-    print(("[TRADE] %s x%d -> %s"):format(itemName, amount, target.Name))
-    RequestTrade:FireServer(target)
-    task.wait(STEP_DELAY)
-
-    if not isTradeOpen() then
-        warn("[TRADE] Trade window didn't open — alt not accepting?")
+    -- Step 2: Click item in inventory
+    local itemBtn = findInventoryItem(itemName)
+    if not itemBtn then
+        warn("[TRADE] Couldn't find item in inventory:", itemName)
         return false
     end
-
-    ChangeOffer:FireServer(itemName, amount)
+    print("[TRADE] Clicking item:", itemName)
+    clickButton(itemBtn)
     task.wait(STEP_DELAY)
 
-    AdvanceTrade:FireServer()
-    task.wait(STEP_DELAY)
+    -- Step 3: Click amount button (Offer 1 / Offer 10 / Offer 100 / Offer 1k)
+    -- If amount is "Max" or specific, try matching buttons
+    local amountBtns = {
+        "Offer " .. amountLabel,
+        "Offer " .. amountLabel:upper(),
+        amountLabel,
+    }
+    local clicked = false
+    for _, txt in ipairs(amountBtns) do
+        local btn = findButton(txt)
+        if btn then
+            print("[TRADE] Clicking amount:", txt)
+            clickButton(btn)
+            clicked = true
+            task.wait(STEP_DELAY)
+            break
+        end
+    end
+    if not clicked then
+        print("[TRADE] No amount button found — item may already be added")
+    end
 
-    if waitForClose(20) then
-        print(("[OK] %s x%d sent"):format(itemName, amount))
+    -- Step 4: Click Ready
+    local ready = findButton("Ready")
+    if ready then
+        print("[TRADE] Clicking Ready")
+        clickButton(ready)
+        task.wait(STEP_DELAY)
+    end
+
+    -- Step 5: Click Ready again (lock in) — some systems need 2
+    ready = findButton("Ready")
+    if ready then
+        print("[TRADE] Clicking Ready (confirm)")
+        clickButton(ready)
+        task.wait(STEP_DELAY)
+    end
+
+    -- Step 6: Wait for trade to close (alt accepts)
+    if waitForTradeClose(20) then
+        print("[TRADE] ✅ Completed")
         return true
     else
-        print(("[TIMEOUT] %s didn't complete"):format(itemName))
+        print("[TRADE] ⏱ Timed out")
         return false
     end
 end
 
+-- ===== DIAGNOSTIC FIRST =====
+print("═══════════════════════════════════════")
+print("[DIAG] Dumping visible buttons so we can see what's clickable")
+print("[DIAG] Open your trade UI manually now (walk up, press trade)")
+task.wait(8)
+
+local pg = player:FindFirstChild("PlayerGui")
+local seen = {}
+for _, d in ipairs(pg:GetDescendants()) do
+    if d:IsA("TextButton") and d.Visible and d.Text ~= "" then
+        if not seen[d.Text] then
+            seen[d.Text] = true
+            print("  [BTN]", d.Text, "| Path:", d:GetFullName())
+        end
+    end
+end
+print("═══════════════════════════════════════")
+
 -- ===== MAIN LOOP =====
-print("[START] Target:", TARGET_NAME)
-task.wait(3)
-
-for _, entry in ipairs(TRADE_LIST) do
-    print(("[LOOP] Trading all %s"):format(entry.Name))
+print("[START] Trading all items")
+for _, entry in ipairs(ITEMS_TO_TRADE) do
+    print(("[LOOP] %s"):format(entry.Name))
     local count, fails = 0, 0
-
     while fails < 3 do
-        if autoTrade(entry.Name, entry.Amount) then
-            count = count + 1
-            fails = 0
+        if doTrade(entry.Name, entry.Amount) then
+            count = count + 1; fails = 0
         else
             fails = fails + 1
-            print(("[FAIL] %s — %d/3"):format(entry.Name, fails))
         end
         task.wait(TRADE_DELAY)
     end
-
     print(("[DONE] %s — %d sent"):format(entry.Name, count))
 end
-
-print("[COMPLETE] All done")
+print("[COMPLETE]")
