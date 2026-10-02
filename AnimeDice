@@ -81,12 +81,19 @@ local function isInTrade()
 	return false
 end
 
--- Main trading loop
+-- Main trading loop - consumables first, then valuable units
 local itemsToTrade = {
+	-- Consumables (priority order)
 	"Trait Reroll",
 	"Gems",
 	"Lucky Spin",
-	"Luck Potion",
+	"Luck IV",
+	"Luck III",
+	"Luck II",
+	"Luck I",
+	-- High-rarity units (Celestial, Secret I, Secret II)
+	-- You can add unit names here like "Huge Angel", "Titanic Itacha", etc
+	-- Just add any high-rarity units you want to farm
 }
 
 for _, itemName in ipairs(itemsToTrade) do
