@@ -20,7 +20,7 @@ local AdvanceTrade = RE:WaitForChild("AdvanceTrade")
 local RespondToRequest = RE:FindFirstChild("RespondToRequest")
 
 -- ===== CONFIG =====
-local TARGET_USERNAME = "Only1sherif"
+local TARGET_USERNAME = "Only1sherifalt1"
 local STEP_DELAY = 1.5      -- seconds between each remote call
 local TRADE_DELAY = 3       -- seconds between full trade attempts
 
