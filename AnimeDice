@@ -6,7 +6,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 
-local TARGET_NAME = "Only1sherifalt1"
+local TARGET_NAME = "Zentynal"
 local OFFER_QTY = 1000
 
 print("[START] Anime Dice Auto-Trade Script")
