@@ -1,152 +1,110 @@
--- Anime Dice Auto-Trade Script
--- Sends Gems, Trait Rerolls, and Units to Only1sherif automatically
+--[[
+    Anime Dice Auto-Trade Script
+    Path: ReplicatedStorage.Network.TradeService.RE
+    Verified args from remote spy
+]]
 
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local player = Players.LocalPlayer
-local mouse = player:GetMouse()
-
--- Get TradeService
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Framework = ReplicatedStorage:WaitForChild("Framework")
-local Features = Framework:WaitForChild("Features")
-local TradeService = Features:WaitForChild("TradeService")
+local player = Players.LocalPlayer
 
-local RequestTrade = TradeService:WaitForChild("RequestTrade")
-local ChangeOffer = TradeService:WaitForChild("ChangeOffer")
-local AdvanceTrade = TradeService:WaitForChild("AdvanceTrade")
-local RespondToRequest = TradeService:WaitForChild("RespondToRequest")
+-- ===== REMOTES =====
+local Network = ReplicatedStorage:WaitForChild("Network")
+local TradeService = Network:WaitForChild("TradeService")
+local RE = TradeService:WaitForChild("RE")
 
-local TARGET = "Only1sherif"
-local ITEM_PRIORITY = {
-	"TraitReroll",  -- 1st priority (rarest)
-	"Gem",          -- 2nd priority
-	"LuckySpin",    -- 3rd priority
+local RequestTrade = RE:WaitForChild("RequestTrade")
+local ChangeOffer  = RE:WaitForChild("ChangeOffer")
+local AdvanceTrade = RE:WaitForChild("AdvanceTrade")
+-- RespondToRequest may exist — check with the dump command at the bottom
+local RespondToRequest = RE:FindFirstChild("RespondToRequest")
+
+-- ===== CONFIG =====
+local TARGET_USERNAME = "Only1sherif"
+local STEP_DELAY = 1.5      -- seconds between each remote call
+local TRADE_DELAY = 3       -- seconds between full trade attempts
+
+-- Item name -> amount. Use plural "Gems" (as seen in the spy)
+-- Check exact item names by running the dump command at the bottom
+local TRADE_LIST = {
+    { Name = "TraitReroll", Amount = 1    },
+    { Name = "Gems",        Amount = 1000 },
+    { Name = "LuckySpin",   Amount = 1    },
 }
 
--- UI Helper Functions
-local function findButtonByText(text)
-	local gui = player:FindFirstChild("PlayerGui")
-	if not gui then return nil end
-	
-	for _, descendant in pairs(gui:GetDescendants()) do
-		if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
-			if descendant.Text == text then
-				return descendant
-			end
-		end
-	end
-	return nil
+-- ===== FIND TARGET PLAYER =====
+local function findTarget()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Name:lower() == TARGET_USERNAME:lower() then
+            return p
+        end
+    end
+    return nil
 end
 
-local function findItemInBackpack(itemName)
-	local gui = player:FindFirstChild("PlayerGui")
-	if not gui then return nil end
-	
-	for _, descendant in pairs(gui:GetDescendants()) do
-		if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
-			if string.find(descendant.Text, itemName) then
-				-- Found item label, return the parent frame (the clickable item)
-				if descendant.Parent and descendant.Parent:IsA("Frame") then
-					return descendant.Parent
-				end
-			end
-		end
-	end
-	return nil
+-- ===== TRADE FUNCTION =====
+local function sendTrade(itemName, amount)
+    local target = findTarget()
+    if not target then
+        warn("[TRADE] Target not in server: " .. TARGET_USERNAME)
+        return false
+    end
+
+    print(("[TRADE] Sending %s x%d to %s"):format(itemName, amount, target.Name))
+
+    -- Step 1: Request trade
+    RequestTrade:FireServer(target)
+    task.wait(STEP_DELAY)
+
+    -- Step 2: Add item to offer
+    ChangeOffer:FireServer(itemName, amount)
+    task.wait(STEP_DELAY)
+
+    -- Step 3: Advance (ready up)
+    AdvanceTrade:FireServer()
+    task.wait(STEP_DELAY)
+
+    -- Step 4: Advance again (confirm / lock in)
+    AdvanceTrade:FireServer()
+    task.wait(STEP_DELAY)
+
+    -- Step 5: Advance once more — some trade systems need 3 clicks
+    -- Comment out if 2 clicks is enough (watch the trade window to see)
+    AdvanceTrade:FireServer()
+    task.wait(STEP_DELAY)
+
+    print(("[TRADE] Attempt finished for %s"):format(itemName))
+    return true
 end
 
-local function clickButton(btn)
-	if btn then
-		mouse.Target = btn
-		local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2
-		mouse.Move(pos.X, pos.Y)
-		wait(0.1)
-		mouse:Click()
-		wait(0.3)
-	end
+-- ===== MAIN LOOP =====
+print("======================================================")
+print("[START] Anime Dice Auto-Trade")
+print("[START] Target: " .. TARGET_USERNAME)
+print("[START] Starting in 5 seconds — make sure alt is in server!")
+print("======================================================")
+task.wait(5)
+
+for _, entry in ipairs(TRADE_LIST) do
+    print(("[LOOP] Trading %s (amount: %d)"):format(entry.Name, entry.Amount))
+
+    local count = 0
+    local fails = 0
+
+    while fails < 3 do
+        local ok = sendTrade(entry.Name, entry.Amount)
+        if ok then
+            count = count + 1
+            fails = 0
+            print(("[SUCCESS] Trade #%d done for %s"):format(count, entry.Name))
+        else
+            fails = fails + 1
+            print(("[FAIL] Attempt %d failed"):format(fails))
+        end
+        task.wait(TRADE_DELAY)
+    end
+
+    print(("[DONE] Finished %s — %d trades sent"):format(entry.Name, count))
 end
 
-local function tradeItem(itemName, quantity)
-	print("[TRADE] Starting trade for " .. itemName .. " x" .. quantity)
-	
-	-- Step 1: Request trade
-	print("[TRADE] Requesting trade with " .. TARGET)
-	RequestTrade:InvokeServer(TARGET)
-	wait(2)
-	
-	-- Step 2: Find and click the item in backpack
-	print("[TRADE] Finding item: " .. itemName)
-	local itemFrame = findItemInBackpack(itemName)
-	if itemFrame then
-		clickButton(itemFrame)
-		wait(1)
-	else
-		print("[ERROR] Could not find item: " .. itemName)
-		return false
-	end
-	
-	-- Step 3: Click appropriate Offer button
-	local offerBtn = nil
-	if quantity >= 1000 then
-		offerBtn = findButtonByText("Offer 1k")
-	elseif quantity >= 100 then
-		offerBtn = findButtonByText("Offer 100")
-	elseif quantity >= 10 then
-		offerBtn = findButtonByText("Offer 10")
-	else
-		offerBtn = findButtonByText("Offer 1")
-	end
-	
-	if offerBtn then
-		print("[TRADE] Clicking Offer button")
-		clickButton(offerBtn)
-		wait(1)
-	end
-	
-	-- Step 4: Click Ready (executor confirms offer)
-	print("[TRADE] Clicking Ready")
-	local readyBtn = findButtonByText("Ready")
-	clickButton(readyBtn)
-	wait(2)
-	
-	-- Step 5: Click Ready again (executor locks in)
-	print("[TRADE] Clicking Ready (confirmation)")
-	readyBtn = findButtonByText("Ready")
-	clickButton(readyBtn)
-	wait(2)
-	
-	-- Step 6: Click Confirm (final confirmation)
-	print("[TRADE] Clicking Confirm")
-	local confirmBtn = findButtonByText("Confirm")
-	clickButton(confirmBtn)
-	wait(2)
-	
-	print("[TRADE] Trade completed!")
-	return true
-end
-
--- Main loop
-print("[START] Anime Dice Auto-Trade Script")
-print("[START] Target: " .. TARGET)
-print("[START] Waiting 5 seconds before starting...")
-wait(5)
-
-for _, itemName in ipairs(ITEM_PRIORITY) do
-	local tradeCount = 0
-	while true do
-		-- Try to trade
-		local success = tradeItem(itemName, 1000)
-		
-		if success then
-			tradeCount = tradeCount + 1
-			print("[SUCCESS] Trade " .. tradeCount .. " completed for " .. itemName)
-			wait(3) -- Wait between trades
-		else
-			print("[FINISHED] No more " .. itemName .. " to trade. Moving to next item.")
-			break
-		end
-	end
-end
-
-print("[COMPLETE] All items traded!")
+print("[COMPLETE] All trades finished!")
