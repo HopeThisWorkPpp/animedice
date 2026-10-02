@@ -1,0 +1,49 @@
+-- Anime Dice Auto-Farm Trade Script
+local TradeService = game:GetService("ReplicatedStorage"):WaitForChild("Framework"):WaitForChild("Features"):WaitForChild("TradeService")
+local RequestTrade = TradeService:WaitForChild("RequestTrade")
+local ChangeOffer = TradeService:WaitForChild("ChangeOffer")
+local AdvanceTrade = TradeService:WaitForChild("AdvanceTrade")
+
+local TARGET = "Only1sherif"
+local OFFER_PRESETS = {1, 10, 100, 1000} -- Offer buttons
+local CONSUMABLES_PRIORITY = {
+    "TraitReroll",  -- 1st priority
+    "Gem",          -- 2nd
+    "LuckySpin",    -- 3rd
+    -- Units would go here (by rarity)
+}
+
+local function tradeItem(itemName, quantity)
+    RequestTrade:InvokeServer(TARGET)
+    wait(1)
+    
+    -- Click item in inventory to select it
+    -- This triggers the "Offer X" buttons
+    local backpackUI = -- find the UI element
+    backpackUI:click(itemName)
+    
+    wait(0.5)
+    
+    -- Click appropriate Offer button based on quantity
+    local offerBtn = -- find "Offer 1k" or "Offer 100" etc
+    offerBtn:click()
+    
+    wait(0.5)
+    
+    -- Click Ready
+    local readyBtn = -- find Ready button
+    readyBtn:click()
+    
+    wait(2) -- wait for completion
+end
+
+-- Loop through consumables
+for _, item in ipairs(CONSUMABLES_PRIORITY) do
+    while true do
+        local count = -- read current count from backpack
+        if count < 1 then break end
+        
+        local offerQty = math.min(1000, count)
+        tradeItem(item, offerQty)
+    end
+end
