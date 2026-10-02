@@ -51,25 +51,43 @@ end
 -- Find the unit rarity config, preferring a stable module over live UI memory.
 -- Primary: scan ReplicatedStorage ModuleScripts for a table keyed by unit name,
 -- or a {entries = {name -> cfg}} table, where cfg.entryConfig.rarity exists.
+local function hasRarity(cfg)
+	if type(cfg) ~= "table" then return false end
+	local ec = rawget(cfg, "entryConfig")
+	return type(ec) == "table" and rawget(ec, "rarity") ~= nil
+end
+
+local function scanModule(result)
+	-- result itself is a name -> cfg table
+	for _, v in pairs(result) do
+		if hasRarity(v) then
+			return result
+		end
+	end
+	-- or it holds a nested {entries = {name -> cfg}} table
+	for _, v in pairs(result) do
+		if type(v) == "table" then
+			local entries = rawget(v, "entries")
+			if type(entries) == "table" then
+				for _, cfg in pairs(entries) do
+					if hasRarity(cfg) then
+						return entries
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
 local function findUnitConfigs()
 	for _, inst in ipairs(RS:GetDescendants()) do
 		if inst:IsA("ModuleScript") then
 			local success, result = pcall(require, inst)
 			if success and type(result) == "table" then
-				for _, v in pairs(result) do
-					if type(v) == "table" then
-						if type(v.entryConfig) == "table" and v.entryConfig.rarity then
-							return result, inst
-						end
-						local entries = rawget(v, "entries")
-						if type(entries) == "table" then
-							for _, cfg in pairs(entries) do
-								if type(cfg) == "table" and type(cfg.entryConfig) == "table" and cfg.entryConfig.rarity then
-									return entries, inst
-								end
-							end
-						end
-					end
+				local okScan, found = pcall(scanModule, result)
+				if okScan and found then
+					return found, inst
 				end
 			end
 		end
@@ -90,7 +108,7 @@ if not UnitConfigs and getgc then
 			local entries = rawget(t, "entries")
 			if type(entries) == "table" then
 				for _, cfg in pairs(entries) do
-					if type(cfg) == "table" and type(rawget(cfg, "entryConfig")) == "table" and rawget(rawget(cfg, "entryConfig"), "rarity") then
+					if hasRarity(cfg) then
 						UnitConfigs = entries
 						break
 					end
@@ -109,8 +127,8 @@ end
 -- Build name -> rarity lookup
 local RARITY_LOOKUP = {}
 for name, cfg in pairs(UnitConfigs) do
-	if type(cfg) == "table" and type(cfg.entryConfig) == "table" and cfg.entryConfig.rarity then
-		RARITY_LOOKUP[name] = cfg.entryConfig.rarity
+	if hasRarity(cfg) then
+		RARITY_LOOKUP[name] = rawget(rawget(cfg, "entryConfig"), "rarity")
 	end
 end
 do
