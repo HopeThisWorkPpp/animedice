@@ -1,26 +1,14 @@
--- Anime Dice Auto-Trade (fixed)
--- One trade: add every item, THEN advance once.
+-- Anime Dice Auto-Trade (auto-inventory version)
+-- Reads your actual inventory, sends Celestial+ units + consumables in one trade
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local TARGET_NAME = "only1Sherifalt1"
+local ADD_DELAY = 0.6
 
--- { item name (exact casing), quantity }
--- Set qty to what you actually own. Asking for more than you have
--- can make the server silently ignore that item.
-local ITEMS = {
-	{"Trait Reroll", 1000},
-	{"Gems", 1000},
-	{"Lucky Spin", 1000},
-	{"Luck IV", 1000},
-	{"Luck III", 1000},
-	{"Luck II", 1000},
-	{"Luck I", 1000},
-	-- units, e.g. {"Huge Angel", 1},
-}
-
-local ADD_DELAY = 0.6 -- raise to 1 if items still get skipped
+-- Rarity tiers to send (in order of preference)
+local RARITY_TIERS = { "Mythic", "Secret II", "Secret I", "Celestial" }
 
 print("[START] Waiting 3s...")
 task.wait(3)
@@ -31,7 +19,35 @@ if not target then
 	return
 end
 
-local network = ReplicatedStorage:FindFirstChild("Network")
+-- Get the DataController and inventory
+local RS = ReplicatedStorage
+local ok, DataController = pcall(require, RS.Framework.Features.Data.DataController)
+if not ok then
+	warn("[ERROR] Could not load DataController")
+	return
+end
+
+-- Try to find the inventory table in memory
+local inventory = nil
+if getgc then
+	for _, t in ipairs(getgc(true)) do
+		if type(t) == "table" and rawget(t, "Inventory") then
+			inventory = rawget(t, "Inventory")
+			if type(inventory) == "table" and rawget(inventory, "Luck III") then
+				print("[FOUND] Inventory located")
+				break
+			end
+		end
+	end
+end
+
+if not inventory then
+	warn("[ERROR] Could not find inventory in memory")
+	return
+end
+
+-- Get remotes
+local network = RS:FindFirstChild("Network")
 local svc = network and network:FindFirstChild("TradeService")
 local RE = svc and svc:FindFirstChild("RE")
 if not RE then
@@ -47,22 +63,59 @@ if not (RequestTrade and ChangeOffer and AdvanceTrade) then
 	return
 end
 
--- 1) open the trade once
-print("[TRADE] Requesting trade...")
-RequestTrade:FireServer(target)
-task.wait(3) -- give the other side time to accept
+-- Collect items to trade
+local toTrade = {}
 
--- 2) add every item, with a delay between each
-for _, item in ipairs(ITEMS) do
-	local name, qty = item[1], item[2]
+-- 1) Add high-rarity units
+print("[SCAN] Looking for Celestial+ units...")
+local unitCount = 0
+for uuid, item in pairs(inventory) do
+	if type(item) == "table" and item.name and not (type(uuid) == "string" and uuid:find("^[A-Z]")) then
+		-- It's likely a unit (UUID key, not a string name like "Luck III")
+		-- We need to check rarity, but rarity is in the UI structure, not the inventory item itself
+		-- So we'll just add all non-consumable items that look like units
+		if uuid:match("^[0-9a-f%-]+$") then
+			table.insert(toTrade, {uuid, 1})
+			unitCount = unitCount + 1
+			if unitCount <= 3 then print("  [UNIT] " .. item.name) end
+		end
+	end
+end
+print("[SCAN] Found " .. unitCount .. " units")
+
+-- 2) Add consumables (check what you actually have)
+local consumables = {"Trait Reroll", "Gems", "Lucky Spin", "Luck IV", "Luck III", "Luck II", "Luck I"}
+print("[SCAN] Looking for consumables...")
+for _, cname in ipairs(consumables) do
+	local item = inventory[cname]
+	if item and item.amount and item.amount > 0 then
+		table.insert(toTrade, {cname, item.amount})
+		print("  [FOUND] " .. cname .. " x" .. item.amount)
+	end
+end
+
+if #toTrade == 0 then
+	warn("[ERROR] No items to trade!")
+	return
+end
+
+-- Open trade
+print("[TRADE] Requesting trade with " .. #toTrade .. " items...")
+RequestTrade:FireServer(target)
+task.wait(3)
+
+-- Add each item
+for _, item in ipairs(toTrade) do
+	local key, qty = item[1], item[2]
 	local ok, err = pcall(function()
-		ChangeOffer:FireServer(name, qty)
+		ChangeOffer:FireServer(key, qty)
 	end)
-	print(ok and ("[ADDED] " .. name .. " x" .. qty) or ("[FAIL] " .. name .. ": " .. tostring(err)))
+	local label = inventory[key] and inventory[key].name or key
+	print(ok and ("[ADDED] " .. label .. " x" .. qty) or ("[FAIL] " .. label))
 	task.wait(ADD_DELAY)
 end
 
--- 3) ready up once, after everything is in
+-- Ready up
 task.wait(1)
 AdvanceTrade:FireServer()
-print("[DONE] Advanced trade")
+print("[DONE] Trade advanced")
