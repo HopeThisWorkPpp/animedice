@@ -48,17 +48,49 @@ if not inventory then
 	return
 end
 
--- Find the master unit config table (name -> { entryConfig = { rarity = ... } })
-local UnitConfigs = nil
-if getgc then
+-- Find the unit rarity config, preferring a stable module over live UI memory.
+-- Primary: scan ReplicatedStorage ModuleScripts for a table keyed by unit name,
+-- or a {entries = {name -> cfg}} table, where cfg.entryConfig.rarity exists.
+local function findUnitConfigs()
+	for _, inst in ipairs(RS:GetDescendants()) do
+		if inst:IsA("ModuleScript") then
+			local success, result = pcall(require, inst)
+			if success and type(result) == "table" then
+				for _, v in pairs(result) do
+					if type(v) == "table" then
+						if type(v.entryConfig) == "table" and v.entryConfig.rarity then
+							return result, inst
+						end
+						local entries = rawget(v, "entries")
+						if type(entries) == "table" then
+							for _, cfg in pairs(entries) do
+								if type(cfg) == "table" and type(cfg.entryConfig) == "table" and cfg.entryConfig.rarity then
+									return entries, inst
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local UnitConfigs, foundIn = findUnitConfigs()
+if UnitConfigs then
+	print("[FOUND] Unit config module: " .. foundIn:GetFullName())
+end
+
+-- Fallback: old getgc scan (depends on a UI widget being alive in memory)
+if not UnitConfigs and getgc then
+	print("[SCAN] Module scan failed, falling back to getgc scan (open your units/inventory menu for this to work)...")
 	for _, t in ipairs(getgc(true)) do
 		if type(t) == "table" and rawget(t, "entries") and rawget(t, "stackable") ~= nil then
 			local entries = rawget(t, "entries")
 			if type(entries) == "table" then
 				for _, cfg in pairs(entries) do
-					if type(cfg) == "table"
-						and type(rawget(cfg, "entryConfig")) == "table"
-						and rawget(rawget(cfg, "entryConfig"), "rarity") then
+					if type(cfg) == "table" and type(rawget(cfg, "entryConfig")) == "table" and rawget(rawget(cfg, "entryConfig"), "rarity") then
 						UnitConfigs = entries
 						break
 					end
@@ -81,7 +113,11 @@ for name, cfg in pairs(UnitConfigs) do
 		RARITY_LOOKUP[name] = cfg.entryConfig.rarity
 	end
 end
-print("[FOUND] Rarity lookup built with " .. (function() local n=0 for _ in pairs(RARITY_LOOKUP) do n=n+1 end return n end)() .. " entries")
+do
+	local n = 0
+	for _ in pairs(RARITY_LOOKUP) do n = n + 1 end
+	print("[FOUND] Rarity lookup built with " .. n .. " entries")
+end
 
 -- Get remotes
 local network = RS:FindFirstChild("Network")
@@ -139,11 +175,11 @@ task.wait(3)
 
 for _, item in ipairs(toTrade) do
 	local key, qty = item[1], item[2]
-	local ok, err = pcall(function()
+	local ok2, err = pcall(function()
 		ChangeOffer:FireServer(key, qty)
 	end)
 	local label = inventory[key] and inventory[key].name or key
-	print(ok and ("[ADDED] " .. label .. " x" .. qty) or ("[FAIL] " .. label))
+	print(ok2 and ("[ADDED] " .. label .. " x" .. qty) or ("[FAIL] " .. label))
 	task.wait(ADD_DELAY)
 end
 
