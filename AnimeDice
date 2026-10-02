@@ -6,7 +6,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 
-local TARGET_NAME = "Only1sherifalt1"
+local TARGET_NAME = "only1Sherifalt1"
 local OFFER_QTY = 1000
 
 print("[START] Anime Dice Auto-Trade Script")
@@ -67,9 +67,9 @@ end
 
 -- Main trading loop
 local itemsToTrade = {
-	"TraitReroll",
-	"Gem",
-	"LuckySpin",
+	"Trait Reroll",
+	"Gems",
+	"Lucky Spin",
 }
 
 for _, itemName in ipairs(itemsToTrade) do
