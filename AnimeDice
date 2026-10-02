@@ -1,88 +1,91 @@
---[[ Auto-Sender — run on MAIN ]]
+-- Anime Dice Auto-Trade Script
+-- Sends Gems, Trait Rerolls, and Units to Only1sherif automatically
+-- Based on Simple Spy capture
+
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
-local RE = game.ReplicatedStorage.Network.TradeService.RE
 
-local TARGET_NAME = "Only1Sherifalt1"   -- ⚠️ VERIFY WITH DIAGNOSTIC FIRST
-local STEP_DELAY = 2
-local TRADE_DELAY = 5
+local TARGET_NAME = "Only1sherif"
+local OFFER_QTY = 1000
 
-local TRADE_LIST = {
-    { Name = "TraitReroll", Amount = 1 },
-    { Name = "Gems",        Amount = 1000 },
-    { Name = "LuckySpin",   Amount = 1 },
+print("[START] Anime Dice Auto-Trade Script")
+print("[START] Target: " .. TARGET_NAME)
+print("[START] Waiting 3 seconds before starting...")
+wait(3)
+
+-- Get target player
+local targetPlayer = Players:FindFirstChild(TARGET_NAME)
+if not targetPlayer then
+	print("[ERROR] Target player '" .. TARGET_NAME .. "' not found!")
+	return
+end
+print("[SUCCESS] Found target player: " .. targetPlayer.Name)
+
+-- Get TradeService remotes
+print("[INIT] Getting TradeService remotes...")
+local TradeService = ReplicatedStorage:FindFirstChild("Network"):FindFirstChild("TradeService"):FindFirstChild("RE")
+
+if not TradeService then
+	print("[ERROR] Could not find ReplicatedStorage.Network.TradeService.RE!")
+	return
+end
+
+local RequestTrade = TradeService:FindFirstChild("RequestTrade")
+local ChangeOffer = TradeService:FindFirstChild("ChangeOffer")
+local AdvanceTrade = TradeService:FindFirstChild("AdvanceTrade")
+
+if not (RequestTrade and ChangeOffer and AdvanceTrade) then
+	print("[ERROR] Could not find required remotes!")
+	return
+end
+
+print("[SUCCESS] Found all remotes!")
+
+-- Function to execute a trade
+local function autoTrade(itemName)
+	print("[TRADE] Starting trade for " .. itemName)
+	
+	-- Step 1: Request trade
+	print("[TRADE] Requesting trade...")
+	RequestTrade:FireServer(targetPlayer)
+	wait(2)
+	
+	-- Step 2: Change offer
+	print("[TRADE] Offering " .. itemName .. " x" .. OFFER_QTY)
+	ChangeOffer:FireServer(itemName, OFFER_QTY)
+	wait(1)
+	
+	-- Step 3: Advance trade (ready)
+	print("[TRADE] Advancing trade...")
+	AdvanceTrade:FireServer()
+	wait(2)
+	
+	print("[SUCCESS] " .. itemName .. " trade sent!")
+	return true
+end
+
+-- Main trading loop
+local itemsToTrade = {
+	"TraitReroll",
+	"Gem",
+	"LuckySpin",
 }
 
-local function findTarget()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Name == TARGET_NAME then return p end
-    end
-    return nil
+for _, itemName in ipairs(itemsToTrade) do
+	local tradeCount = 0
+	while true do
+		local success = autoTrade(itemName)
+		
+		if success then
+			tradeCount = tradeCount + 1
+			print("[LOOP] " .. itemName .. " trade #" .. tradeCount .. " completed")
+			wait(3)
+		else
+			print("[NEXT] Moving to next item after " .. tradeCount .. " " .. itemName .. " trades")
+			break
+		end
+	end
 end
 
-local function isTradeOpen()
-    local pg = player:FindFirstChild("PlayerGui")
-    if not pg then return false end
-    for _, d in ipairs(pg:GetDescendants()) do
-        if d:IsA("TextLabel") or d:IsA("TextButton") then
-            if string.find(d.Text:lower(), "ready") or string.find(d.Text:lower(), "offer") then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function sendTrade(itemName, amount)
-    local target = findTarget()
-    if not target then
-        warn("[SENDER] Alt not in server")
-        return false
-    end
-
-    print("[SENDER] Requesting trade with", target.Name)
-    RE.RequestTrade:FireServer(target)
-    task.wait(STEP_DELAY)
-
-    if not isTradeOpen() then
-        warn("[SENDER] Trade window never opened — alt not accepting?")
-        return false
-    end
-
-    print("[SENDER] Trade open. Adding", itemName, "x", amount)
-    RE.ChangeOffer:FireServer(itemName, amount)
-    task.wait(STEP_DELAY)
-
-    print("[SENDER] Ready up")
-    RE.AdvanceTrade:FireServer()
-    task.wait(STEP_DELAY)
-
-    RE.AdvanceTrade:FireServer()
-    task.wait(STEP_DELAY)
-
-    print("[SENDER] Attempt done")
-    return true
-end
-
-print("[SENDER] Starting in 5s — make sure alt is running auto-accept")
-task.wait(5)
-
-for _, entry in ipairs(TRADE_LIST) do
-    print("[LOOP]", entry.Name)
-    local count, fails = 0, 0
-    while fails < 2 do
-        if sendTrade(entry.Name, entry.Amount) then
-            count = count + 1
-            fails = 0
-        else
-            fails = fails + 1
-            -- Don't hammer if trade isn't opening
-            if fails >= 2 then
-                warn("[SENDER] Stopping " .. entry.Name .. " — trades not opening")
-                break
-            end
-        end
-        task.wait(TRADE_DELAY)
-    end
-    print("[DONE]", entry.Name, "->", count, "successful")
-end
+print("[COMPLETE] Trading script finished!")
