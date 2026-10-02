@@ -1,49 +1,152 @@
--- Anime Dice Auto-Farm Trade Script
-local TradeService = game:GetService("ReplicatedStorage"):WaitForChild("Framework"):WaitForChild("Features"):WaitForChild("TradeService")
+-- Anime Dice Auto-Trade Script
+-- Sends Gems, Trait Rerolls, and Units to Only1sherif automatically
+
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local mouse = player:GetMouse()
+
+-- Get TradeService
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Framework = ReplicatedStorage:WaitForChild("Framework")
+local Features = Framework:WaitForChild("Features")
+local TradeService = Features:WaitForChild("TradeService")
+
 local RequestTrade = TradeService:WaitForChild("RequestTrade")
 local ChangeOffer = TradeService:WaitForChild("ChangeOffer")
 local AdvanceTrade = TradeService:WaitForChild("AdvanceTrade")
+local RespondToRequest = TradeService:WaitForChild("RespondToRequest")
 
 local TARGET = "Only1sherif"
-local OFFER_PRESETS = {1, 10, 100, 1000} -- Offer buttons
-local CONSUMABLES_PRIORITY = {
-    "TraitReroll",  -- 1st priority
-    "Gem",          -- 2nd
-    "LuckySpin",    -- 3rd
-    -- Units would go here (by rarity)
+local ITEM_PRIORITY = {
+	"TraitReroll",  -- 1st priority (rarest)
+	"Gem",          -- 2nd priority
+	"LuckySpin",    -- 3rd priority
 }
 
-local function tradeItem(itemName, quantity)
-    RequestTrade:InvokeServer(TARGET)
-    wait(1)
-    
-    -- Click item in inventory to select it
-    -- This triggers the "Offer X" buttons
-    local backpackUI = -- find the UI element
-    backpackUI:click(itemName)
-    
-    wait(0.5)
-    
-    -- Click appropriate Offer button based on quantity
-    local offerBtn = -- find "Offer 1k" or "Offer 100" etc
-    offerBtn:click()
-    
-    wait(0.5)
-    
-    -- Click Ready
-    local readyBtn = -- find Ready button
-    readyBtn:click()
-    
-    wait(2) -- wait for completion
+-- UI Helper Functions
+local function findButtonByText(text)
+	local gui = player:FindFirstChild("PlayerGui")
+	if not gui then return nil end
+	
+	for _, descendant in pairs(gui:GetDescendants()) do
+		if descendant:IsA("TextButton") or descendant:IsA("TextLabel") then
+			if descendant.Text == text then
+				return descendant
+			end
+		end
+	end
+	return nil
 end
 
--- Loop through consumables
-for _, item in ipairs(CONSUMABLES_PRIORITY) do
-    while true do
-        local count = -- read current count from backpack
-        if count < 1 then break end
-        
-        local offerQty = math.min(1000, count)
-        tradeItem(item, offerQty)
-    end
+local function findItemInBackpack(itemName)
+	local gui = player:FindFirstChild("PlayerGui")
+	if not gui then return nil end
+	
+	for _, descendant in pairs(gui:GetDescendants()) do
+		if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+			if string.find(descendant.Text, itemName) then
+				-- Found item label, return the parent frame (the clickable item)
+				if descendant.Parent and descendant.Parent:IsA("Frame") then
+					return descendant.Parent
+				end
+			end
+		end
+	end
+	return nil
 end
+
+local function clickButton(btn)
+	if btn then
+		mouse.Target = btn
+		local pos = btn.AbsolutePosition + btn.AbsoluteSize / 2
+		mouse.Move(pos.X, pos.Y)
+		wait(0.1)
+		mouse:Click()
+		wait(0.3)
+	end
+end
+
+local function tradeItem(itemName, quantity)
+	print("[TRADE] Starting trade for " .. itemName .. " x" .. quantity)
+	
+	-- Step 1: Request trade
+	print("[TRADE] Requesting trade with " .. TARGET)
+	RequestTrade:InvokeServer(TARGET)
+	wait(2)
+	
+	-- Step 2: Find and click the item in backpack
+	print("[TRADE] Finding item: " .. itemName)
+	local itemFrame = findItemInBackpack(itemName)
+	if itemFrame then
+		clickButton(itemFrame)
+		wait(1)
+	else
+		print("[ERROR] Could not find item: " .. itemName)
+		return false
+	end
+	
+	-- Step 3: Click appropriate Offer button
+	local offerBtn = nil
+	if quantity >= 1000 then
+		offerBtn = findButtonByText("Offer 1k")
+	elseif quantity >= 100 then
+		offerBtn = findButtonByText("Offer 100")
+	elseif quantity >= 10 then
+		offerBtn = findButtonByText("Offer 10")
+	else
+		offerBtn = findButtonByText("Offer 1")
+	end
+	
+	if offerBtn then
+		print("[TRADE] Clicking Offer button")
+		clickButton(offerBtn)
+		wait(1)
+	end
+	
+	-- Step 4: Click Ready (executor confirms offer)
+	print("[TRADE] Clicking Ready")
+	local readyBtn = findButtonByText("Ready")
+	clickButton(readyBtn)
+	wait(2)
+	
+	-- Step 5: Click Ready again (executor locks in)
+	print("[TRADE] Clicking Ready (confirmation)")
+	readyBtn = findButtonByText("Ready")
+	clickButton(readyBtn)
+	wait(2)
+	
+	-- Step 6: Click Confirm (final confirmation)
+	print("[TRADE] Clicking Confirm")
+	local confirmBtn = findButtonByText("Confirm")
+	clickButton(confirmBtn)
+	wait(2)
+	
+	print("[TRADE] Trade completed!")
+	return true
+end
+
+-- Main loop
+print("[START] Anime Dice Auto-Trade Script")
+print("[START] Target: " .. TARGET)
+print("[START] Waiting 5 seconds before starting...")
+wait(5)
+
+for _, itemName in ipairs(ITEM_PRIORITY) do
+	local tradeCount = 0
+	while true do
+		-- Try to trade
+		local success = tradeItem(itemName, 1000)
+		
+		if success then
+			tradeCount = tradeCount + 1
+			print("[SUCCESS] Trade " .. tradeCount .. " completed for " .. itemName)
+			wait(3) -- Wait between trades
+		else
+			print("[FINISHED] No more " .. itemName .. " to trade. Moving to next item.")
+			break
+		end
+	end
+end
+
+print("[COMPLETE] All items traded!")
