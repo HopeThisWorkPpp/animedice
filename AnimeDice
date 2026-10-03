@@ -1,15 +1,19 @@
--- Anime Dice Auto-Trade (auto-inventory version)
--- Reads your actual inventory, sends target-rarity units + consumables in one trade
+-- Anime Dice Auto-Trade v3
+-- Finds your inventory + unit rarities from memory, sends everything in ONE trade.
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RS = game:GetService("ReplicatedStorage")
 
 local TARGET_NAME = "only1Sherifalt1"
 local ADD_DELAY = 0.6
+local SKIP_LOCKED = true
 
-local RARITY_TIERS = { "Mythic", "Secret II", "Secret I", "Celestial" }
-local RARITY_ACCEPT = {}
-for _, r in ipairs(RARITY_TIERS) do RARITY_ACCEPT[r] = true end
+-- units with these rarities get sent (check the summary print and edit if needed)
+local RARITIES = { "Celestial", "Secret I", "Secret II", "Mythic" }
+local CONSUMABLES = { "Trait Reroll", "Gems", "Lucky Spin", "Luck IV", "Luck III", "Luck II", "Luck I" }
+
+local accept = {}
+for _, r in ipairs(RARITIES) do accept[r] = true end
 
 print("[START] Waiting 3s...")
 task.wait(3)
@@ -20,172 +24,121 @@ if not target then
 	return
 end
 
-local RS = ReplicatedStorage
-local ok, DataController = pcall(require, RS.Framework.Features.Data.DataController)
-if not ok then
-	warn("[ERROR] Could not load DataController")
+if not getgc then
+	warn("[ERROR] getgc not supported by this executor")
 	return
 end
 
-local inventory = nil
-if getgc then
-	for _, t in ipairs(getgc(true)) do
-		if type(t) == "table" and rawget(t, "Inventory") then
-			local candidate = rawget(t, "Inventory")
-			if type(candidate) == "table" and rawget(candidate, "Luck III") then
-				inventory = candidate
-				print("[FOUND] Inventory located")
-				break
-			end
-		end
-	end
-end
-
-if not inventory then
-	warn("[ERROR] Could not find inventory in memory")
-	return
-end
-
-local function hasRarity(cfg)
-	if type(cfg) ~= "table" then return false end
-	local ec = rawget(cfg, "entryConfig")
-	return type(ec) == "table" and rawget(ec, "rarity") ~= nil
-end
-
-local function scanModule(result)
-	for _, v in pairs(result) do
-		if hasRarity(v) then
-			return result
-		end
-	end
-	for _, v in pairs(result) do
-		if type(v) == "table" then
-			local entries = rawget(v, "entries")
-			if type(entries) == "table" then
-				for _, cfg in pairs(entries) do
-					if hasRarity(cfg) then
-						return entries
-					end
-				end
-			end
-		end
-	end
-	return nil
-end
-
-local function findUnitConfigs()
-	for _, inst in ipairs(RS:GetDescendants()) do
-		if inst:IsA("ModuleScript") then
-			local success, result = pcall(require, inst)
-			if success and type(result) == "table" then
-				local okScan, found = pcall(scanModule, result)
-				if okScan and found then
-					return found, inst
-				end
-			end
-		end
-	end
-	return nil
-end
-
-local UnitConfigs, foundIn = findUnitConfigs()
-if UnitConfigs then
-	print("[FOUND] Unit config module: " .. foundIn:GetFullName())
-end
-
-if not UnitConfigs and getgc then
-	print("[SCAN] Module scan failed, falling back to getgc scan (open your units/inventory menu for this to work)...")
-	for _, t in ipairs(getgc(true)) do
-		if type(t) == "table" and rawget(t, "entries") and rawget(t, "stackable") ~= nil then
-			local entries = rawget(t, "entries")
-			if type(entries) == "table" then
-				for _, cfg in pairs(entries) do
-					if hasRarity(cfg) then
-						UnitConfigs = entries
-						break
-					end
-				end
-			end
-		end
-		if UnitConfigs then break end
-	end
-end
-
-if not UnitConfigs then
-	warn("[ERROR] Could not find unit rarity config table — aborting rather than sending unknown-rarity units")
-	return
-end
-
-local RARITY_LOOKUP = {}
-for name, cfg in pairs(UnitConfigs) do
-	if hasRarity(cfg) then
-		RARITY_LOOKUP[name] = rawget(rawget(cfg, "entryConfig"), "rarity")
-	end
-end
-do
-	local n = 0
-	for _ in pairs(RARITY_LOOKUP) do n = n + 1 end
-	print("[FOUND] Rarity lookup built with " .. n .. " entries")
-end
-
+-- Remotes
 local network = RS:FindFirstChild("Network")
 local svc = network and network:FindFirstChild("TradeService")
 local RE = svc and svc:FindFirstChild("RE")
-if not RE then
-	warn("[ERROR] TradeService.RE not found")
-	return
-end
-
-local RequestTrade = RE:FindFirstChild("RequestTrade")
-local ChangeOffer = RE:FindFirstChild("ChangeOffer")
-local AdvanceTrade = RE:FindFirstChild("AdvanceTrade")
+local RequestTrade = RE and RE:FindFirstChild("RequestTrade")
+local ChangeOffer = RE and RE:FindFirstChild("ChangeOffer")
+local AdvanceTrade = RE and RE:FindFirstChild("AdvanceTrade")
 if not (RequestTrade and ChangeOffer and AdvanceTrade) then
-	warn("[ERROR] Missing remotes")
+	warn("[ERROR] Trade remotes not found")
 	return
 end
 
-local toTrade = {}
+-- Rarity helper: entry may hold rarity directly or inside entryConfig
+local function rarityOf(cfg)
+	if type(cfg) ~= "table" then return nil end
+	local r = rawget(cfg, "rarity")
+	if r == nil then
+		local ec = rawget(cfg, "entryConfig")
+		if type(ec) == "table" then r = rawget(ec, "rarity") end
+	end
+	return r ~= nil and tostring(r) or nil
+end
 
-print("[SCAN] Looking for " .. table.concat(RARITY_TIERS, "/") .. " units...")
-local unitCount = 0
-for uuid, item in pairs(inventory) do
-	if type(item) == "table" and item.name and type(uuid) == "string" and uuid:match("^[0-9a-f%-]+$") then
-		local rarity = RARITY_LOOKUP[item.name]
-		if rarity and RARITY_ACCEPT[rarity] then
-			table.insert(toTrade, {uuid, 1})
-			unitCount = unitCount + 1
-			print("  [UNIT] " .. item.name .. " (" .. rarity .. ")")
+-- One pass over memory: find raw inventory + unit config tables
+local inventory
+local rarityByName = {}
+
+for _, t in ipairs(getgc(true)) do
+	pcall(function()
+		if type(t) ~= "table" then return end
+
+		if not inventory then
+			local lt = rawget(t, "Luck III")
+			if type(lt) == "table"
+				and rawget(lt, "name") == "Luck III"
+				and type(rawget(lt, "amount")) == "number" then
+				inventory = t
+			end
+		end
+
+		if rawget(t, "stackable") == false then
+			local entries = rawget(t, "entries")
+			if type(entries) == "table" then
+				for name, cfg in pairs(entries) do
+					local r = rarityOf(cfg)
+					if r then rarityByName[name] = r end
+				end
+			end
+		end
+	end)
+end
+
+if not inventory then
+	warn("[ERROR] Inventory table not found. Open your inventory menu once, then re-run.")
+	return
+end
+print("[FOUND] Inventory located")
+
+local nRar = 0
+for _ in pairs(rarityByName) do nRar += 1 end
+if nRar == 0 then
+	warn("[ERROR] No unit rarity data found. Open your units menu once, then re-run.")
+	return
+end
+print("[FOUND] Rarity data for " .. nRar .. " units")
+
+-- Collect trade list
+local toTrade = {}
+local seen = {}
+
+for key, item in pairs(inventory) do
+	if type(key) == "string" and key:match("^%x+%-%x+%-%x+%-%x+%-%x+$") and type(item) == "table" then
+		local name = rawget(item, "name")
+		local attrs = rawget(item, "attributes")
+		local locked = type(attrs) == "table" and rawget(attrs, "locked") == true
+		local rarity = name and rarityByName[name]
+		if rarity then seen[rarity] = (seen[rarity] or 0) + 1 end
+		if rarity and accept[rarity] and not (SKIP_LOCKED and locked) then
+			table.insert(toTrade, { key, 1, name .. " (" .. rarity .. ")" })
 		end
 	end
 end
-print("[SCAN] Found " .. unitCount .. " matching units")
 
-local consumables = {"Trait Reroll", "Gems", "Lucky Spin", "Luck IV", "Luck III", "Luck II", "Luck I"}
-print("[SCAN] Looking for consumables...")
-for _, cname in ipairs(consumables) do
+print("[SUMMARY] Units you own by rarity:")
+for r, n in pairs(seen) do
+	print("   " .. r .. ": " .. n .. (accept[r] and "  <- sending" or ""))
+end
+
+for _, cname in ipairs(CONSUMABLES) do
 	local item = inventory[cname]
-	if item and item.amount and item.amount > 0 then
-		table.insert(toTrade, {cname, item.amount})
-		print("  [FOUND] " .. cname .. " x" .. item.amount)
+	if type(item) == "table" and type(rawget(item, "amount")) == "number" and item.amount > 0 then
+		table.insert(toTrade, { cname, item.amount, cname })
 	end
 end
 
 if #toTrade == 0 then
-	warn("[ERROR] No items to trade!")
+	warn("[ERROR] Nothing to trade")
 	return
 end
 
-print("[TRADE] Requesting trade with " .. #toTrade .. " items...")
+-- Trade
+print("[TRADE] Requesting trade (" .. #toTrade .. " items)...")
 RequestTrade:FireServer(target)
 task.wait(3)
 
-for _, item in ipairs(toTrade) do
-	local key, qty = item[1], item[2]
-	local ok2, err = pcall(function()
-		ChangeOffer:FireServer(key, qty)
+for _, it in ipairs(toTrade) do
+	local ok, err = pcall(function()
+		ChangeOffer:FireServer(it[1], it[2])
 	end)
-	local label = inventory[key] and inventory[key].name or key
-	print(ok2 and ("[ADDED] " .. label .. " x" .. qty) or ("[FAIL] " .. label))
+	print(ok and ("[ADDED] " .. it[3] .. " x" .. it[2]) or ("[FAIL] " .. it[3] .. ": " .. tostring(err)))
 	task.wait(ADD_DELAY)
 end
 
