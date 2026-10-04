@@ -1,17 +1,14 @@
 --=====================================================================
--- Anime Dice Auto-Trade — CORRECTED
--- Uses the game's ClientComm signals (not RemoteEvents).
+-- Anime Dice Auto-Trade — with plot pickup via InteractSlot
 --=====================================================================
-
-local Players = game:GetService("Players")
-local RS      = game:GetService("ReplicatedStorage")
+local Players     = game:GetService("Players")
+local RS          = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
-local TARGET_NAME = "only1Sherifalt1"
-local ADD_DELAY   = 0.7
+local TARGET_NAME  = "only1Sherifalt1"
+local ADD_DELAY    = 0.7
+local PICKUP_DELAY = 0.35
 
--- Rarity strings must match the game's RarityList exactly.
--- "Secret" is split into two buckets.
 local RARITY_FILTER = {
     ["Celestial"] = true,
     ["Secret I"]  = true,
@@ -19,7 +16,6 @@ local RARITY_FILTER = {
     ["Mythical"]  = true,
 }
 
--- Consumables to send — matched against entry.name
 local CONSUMABLES = {
     "Luck III", "Luck II", "Luck I", "Luck IV",
     "Lucky Spin", "Jackpot Spin",
@@ -27,7 +23,7 @@ local CONSUMABLES = {
 }
 
 --=====================================================================
--- 1. Framework modules
+-- Framework
 --=====================================================================
 local Framework = RS:WaitForChild("Framework")
 local Features  = Framework:WaitForChild("Features")
@@ -36,48 +32,44 @@ local NetworkFolder = RS:FindFirstChild("Network") or Framework:WaitForChild("Ne
 
 local DataController = require(Features.Data.DataController)
 local EntryRegistry  = require(Features.Inventory.EntryRegistry)
-local TradeConfig    = require(Features.Trading.TradeConfig)
+
+local ClientComm = require(Packages.Network).ClientComm
 
 --=====================================================================
--- 2. ClientComm → get TradeService signals
+-- Signals
 --=====================================================================
-local NetworkPkg = require(Packages.Network)
-local ClientComm = NetworkPkg.ClientComm
-
 local tradeComm = ClientComm.new(NetworkFolder, false, "TradeService")
+local RequestTrade = tradeComm:GetSignal("RequestTrade")
+local ChangeOffer  = tradeComm:GetSignal("ChangeOffer")
+local AdvanceTrade = tradeComm:GetSignal("AdvanceTrade")
+local CancelTrade  = tradeComm:GetSignal("CancelTrade")
 
-local RequestTrade    = tradeComm:GetSignal("RequestTrade")
-local ChangeOffer     = tradeComm:GetSignal("ChangeOffer")
-local AdvanceTrade    = tradeComm:GetSignal("AdvanceTrade")
-local CancelTrade     = tradeComm:GetSignal("CancelTrade")
+local plotComm     = ClientComm.new(NetworkFolder, false, "PlotService")
+local InteractSlot = plotComm:GetSignal("InteractSlot")   -- ← from SimpleSpy
 
--- Fire helper — signals have :Fire(...) NOT :FireServer(...)
 local function fire(signal, ...)
     if not signal then return false end
     local args = table.pack(...)
     local ok, err = pcall(function()
         signal:Fire(table.unpack(args, 1, args.n))
     end)
-    if not ok then
-        warn("[FIRE FAIL] " .. tostring(err))
-    end
+    if not ok then warn("[FIRE FAIL] " .. tostring(err)) end
     return ok
 end
 
 --=====================================================================
--- 3. Inventory unwrap (unchanged from your version — it's correct)
+-- Unwrap helpers
 --=====================================================================
-local function unwrap(value)
-    if type(value) == "function" then
-        local ok, result = pcall(value)
-        return ok and result or nil
+local function unwrap(v)
+    if type(v) == "function" then
+        local ok, r = pcall(v); return ok and r or nil
     end
-    local mt = type(value) == "table" and getmetatable(value)
+    local mt = type(v) == "table" and getmetatable(v)
     if mt and mt.__call then
-        local ok, result = pcall(function() return value() end)
-        return ok and result or value
+        local ok, r = pcall(function() return v() end)
+        return ok and r or v
     end
-    return value
+    return v
 end
 
 local function deepUnwrap(source)
@@ -101,130 +93,163 @@ local function deepUnwrap(source)
 end
 
 --=====================================================================
--- 4. Rarity resolution
+-- Rarity
 --=====================================================================
 local function getRarity(entry)
     if type(entry) ~= "table" or not entry.name then return nil end
     local cfg = EntryRegistry.getEntryConfig(entry.name)
     if not cfg then return nil end
-
     if type(cfg.getRarity) == "function" then
-        local ok, rarity = pcall(cfg.getRarity, entry.attributes or {})
-        if ok and type(rarity) == "string" then return rarity end
+        local ok, r = pcall(cfg.getRarity, entry.attributes or {})
+        if ok and type(r) == "string" then return r end
     end
     if type(cfg.rarity) == "string" then return cfg.rarity end
     return nil
 end
 
 --=====================================================================
--- 5. Build the offer list
+-- PLOT PICKUP — uses InteractSlot(slotNumber)
 --=====================================================================
-local inventory = deepUnwrap(DataController.Inventory)
-if type(inventory) ~= "table" then
-    warn("[ERROR] Could not read inventory")
-    return
-end
-
--- Placed-unit set (so we don't rip units off your plot)
-local placedSet = {}
-do
+local function pickupPlacedUnits()
     local slots = deepUnwrap(DataController.Slots)
-    if type(slots) == "table" then
-        for _, slot in slots do
-            if type(slot) == "table" and type(slot.unitId) == "string" then
-                placedSet[slot.unitId] = true
-            end
+    if type(slots) ~= "table" then
+        warn("[PICKUP] Could not read DataController.Slots")
+        return 0
+    end
+
+    -- Collect slots in numeric order
+    local slotList = {}
+    for slotNum, data in pairs(slots) do
+        if type(data) == "table" and data.unitId then
+            slotList[#slotList + 1] = { slot = tonumber(slotNum) or slotNum, data = data }
         end
     end
+    table.sort(slotList, function(a, b)
+        return tonumber(a.slot) < tonumber(b.slot)
+    end)
+
+    local removed = 0
+    for _, item in ipairs(slotList) do
+        local entry  = item.data
+        local rarity = getRarity(entry)
+
+        if rarity and RARITY_FILTER[rarity] then
+            print(("[PICKUP] Slot %s → %s (%s)"):format(
+                tostring(item.slot), tostring(entry.name), rarity
+            ))
+            fire(InteractSlot, item.slot)     -- ← SimpleSpy-confirmed signature
+            removed += 1
+            task.wait(PICKUP_DELAY)
+        end
+    end
+
+    if removed > 0 then
+        print("[PICKUP] Waiting 1.5s for inventory to sync...")
+        task.wait(1.5)
+    end
+    return removed
 end
 
--- Build a quick lookup for consumable names
-local wantConsumable = {}
-for _, n in ipairs(CONSUMABLES) do wantConsumable[n] = true end
+--=====================================================================
+-- Build offer list
+--=====================================================================
+local function buildOffer()
+    local inventory = deepUnwrap(DataController.Inventory)
+    if type(inventory) ~= "table" then
+        warn("[BUILD] Could not read inventory")
+        return {}
+    end
 
-local toTrade = {}
+    local wantConsumable = {}
+    for _, n in ipairs(CONSUMABLES) do wantConsumable[n] = true end
 
-print("[SCAN] Building trade offer...")
+    local toTrade = {}
+    local unitCount = 0
 
-local unitCount = 0
-for key, entry in pairs(inventory) do
-    if type(key) == "string" and type(entry) == "table" and entry.name then
-        local cfg = EntryRegistry.getEntryConfig(entry.name)
+    for key, entry in pairs(inventory) do
+        if type(key) == "string" and type(entry) == "table" and entry.name then
+            local cfg = EntryRegistry.getEntryConfig(entry.name)
 
-        if cfg and cfg.kind == "Unit" then
-            local rarity = getRarity(entry)
-            if rarity and RARITY_FILTER[rarity] then
-                -- Skip locked units
-                local locked = entry.attributes and entry.attributes.locked == true
-                -- Skip placed units
-                local placed = placedSet[entry.unitId] or placedSet[key]
-                if not locked and not placed then
-                    table.insert(toTrade, {
-                        key   = key,
-                        qty   = math.max(1, tonumber(entry.amount) or 1),
-                        label = entry.name .. " (" .. rarity .. ")",
-                        kind  = "Unit"
-                    })
-                    unitCount = unitCount + 1
+            if cfg and cfg.kind == "Unit" then
+                local rarity = getRarity(entry)
+                if rarity and RARITY_FILTER[rarity] then
+                    local locked = entry.attributes and entry.attributes.locked == true
+                    if not locked then
+                        toTrade[#toTrade + 1] = {
+                            key = key,
+                            qty = math.max(1, tonumber(entry.amount) or 1),
+                            label = entry.name .. " (" .. rarity .. ")",
+                        }
+                        unitCount += 1
+                    end
+                end
+            elseif wantConsumable[entry.name] then
+                local amt = tonumber(entry.amount) or 0
+                if amt > 0 then
+                    toTrade[#toTrade + 1] = {
+                        key = key,
+                        qty = math.floor(amt),
+                        label = entry.name .. " x" .. math.floor(amt),
+                    }
+                    print("  [ITEM] " .. entry.name .. " x" .. math.floor(amt))
                 end
             end
-        elseif wantConsumable[entry.name] then
-            local amt = tonumber(entry.amount) or 0
-            if amt > 0 then
-                table.insert(toTrade, {
-                    key   = key,
-                    qty   = math.floor(amt),
-                    label = entry.name .. " x" .. math.floor(amt),
-                    kind  = "Item"
-                })
-                print("  [FOUND ITEM] " .. entry.name .. " x" .. math.floor(amt))
-            end
         end
     end
-end
 
-print("[SCAN] Found " .. unitCount .. " matching units")
-print("[SCAN] Total entries to offer: " .. #toTrade)
-
-if #toTrade == 0 then
-    warn("[ERROR] Nothing to trade")
-    return
+    print(("[BUILD] %d units, %d total entries"):format(unitCount, #toTrade))
+    return toTrade
 end
 
 --=====================================================================
--- 6. Find target
+-- Target
 --=====================================================================
-local target
-for _, p in Players:GetPlayers() do
-    if p ~= LocalPlayer
-        and (string.lower(p.Name) == string.lower(TARGET_NAME)
-             or string.lower(p.DisplayName) == string.lower(TARGET_NAME))
-    then
-        target = p
-        break
+local function findTarget()
+    for _, p in Players:GetPlayers() do
+        if p ~= LocalPlayer
+            and (string.lower(p.Name) == string.lower(TARGET_NAME)
+                 or string.lower(p.DisplayName) == string.lower(TARGET_NAME))
+        then
+            return p
+        end
     end
+    return nil
 end
 
+--=====================================================================
+-- Main
+--=====================================================================
+local target = findTarget()
 if not target then
     warn("[ERROR] Target not found: " .. TARGET_NAME)
     return
 end
 
---=====================================================================
--- 7. Execute the trade
---=====================================================================
-print("[TRADE] Sending request to " .. target.Name)
+print("[MAIN] Step 1: Picking up matching units from plot...")
+local picked = pickupPlacedUnits()
+print(("[MAIN] Picked up %d unit(s)"):format(picked))
+
+print("[MAIN] Step 2: Building offer...")
+local toTrade = buildOffer()
+if #toTrade == 0 then
+    warn("[ERROR] Nothing to trade")
+    return
+end
+
+print("[MAIN] Step 3: Requesting trade with " .. target.Name)
 fire(RequestTrade, target)
 task.wait(3)
 
-print("[TRADE] Adding items to offer...")
+print("[MAIN] Step 4: Adding items to offer...")
 for _, item in ipairs(toTrade) do
     fire(ChangeOffer, item.key, item.qty)
-    print(("[OK] %s"):format(item.label))
+    print("[OK] " .. item.label)
     task.wait(ADD_DELAY)
 end
 
-print("[TRADE] Ready / advance")
+print("[MAIN] Step 5: Ready / Confirm")
 task.wait(1)
-fire(AdvanceTrade)
-print("[DONE] — click Ready + Confirm on the alt if it's not scripted")
+fire(AdvanceTrade)   -- Offer → Ready
+task.wait(2)
+fire(AdvanceTrade)   -- Ready → Confirm
+print("[DONE]")
