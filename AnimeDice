@@ -1,13 +1,18 @@
 --=====================================================================
--- Anime Dice Auto-Trade — with plot pickup via InteractSlot
+-- Anime Dice Auto-Trade — race-safe offer pushing
 --=====================================================================
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 
 local TARGET_NAME  = "only1Sherifalt1"
-local ADD_DELAY    = 0.7
 local PICKUP_DELAY = 0.35
+
+-- Pacing
+local OFFER_PUSH_DELAY   = 0.12    -- min gap between ChangeOffer calls
+local OFFER_SETTLE_WAIT  = 1.5     -- how long to wait after offer matches
+local READY_RETRY_DELAY  = 0.5     -- how often to re-check ready state
+local READY_MAX_RETRIES  = 6
 
 local RARITY_FILTER = {
     ["Celestial"] = true,
@@ -25,10 +30,10 @@ local CONSUMABLES = {
 --=====================================================================
 -- Framework
 --=====================================================================
-local Framework = RS:WaitForChild("Framework")
-local Features  = Framework:WaitForChild("Features")
-local Packages  = RS:FindFirstChild("Packages") or Framework:WaitForChild("Packages")
-local NetworkFolder = RS:FindFirstChild("Network") or Framework:WaitForChild("Network")
+local Framework     = RS:WaitForChild("Framework")
+local Features      = Framework:WaitForChild("Features")
+local Packages      = RS:FindFirstChild("Packages") or Framework:WaitForChild("Packages")
+local NetworkFolder = RS:FindFirstChild("Network")  or Framework:WaitForChild("Network")
 
 local DataController = require(Features.Data.DataController)
 local EntryRegistry  = require(Features.Inventory.EntryRegistry)
@@ -38,14 +43,15 @@ local ClientComm = require(Packages.Network).ClientComm
 --=====================================================================
 -- Signals
 --=====================================================================
-local tradeComm = ClientComm.new(NetworkFolder, false, "TradeService")
+local tradeComm    = ClientComm.new(NetworkFolder, false, "TradeService")
 local RequestTrade = tradeComm:GetSignal("RequestTrade")
 local ChangeOffer  = tradeComm:GetSignal("ChangeOffer")
 local AdvanceTrade = tradeComm:GetSignal("AdvanceTrade")
 local CancelTrade  = tradeComm:GetSignal("CancelTrade")
+local TradeEvent   = tradeComm:GetSignal("TradeEvent")
 
 local plotComm     = ClientComm.new(NetworkFolder, false, "PlotService")
-local InteractSlot = plotComm:GetSignal("InteractSlot")   -- ← from SimpleSpy
+local InteractSlot = plotComm:GetSignal("InteractSlot")
 
 local function fire(signal, ...)
     if not signal then return false end
@@ -108,7 +114,60 @@ local function getRarity(entry)
 end
 
 --=====================================================================
--- PLOT PICKUP — uses InteractSlot(slotNumber)
+-- Trade event tracker (mirrors the original's tradeState)
+--=====================================================================
+local trade = {
+    active         = false,
+    phase          = "Offer",
+    ownOffer       = {},     -- server-confirmed own offer {key -> amount}
+    ownReady       = false,
+    otherReady     = false,
+    ownAccepted    = false,
+    otherAccepted  = false,
+    otherOfferCount= 0,
+}
+
+TradeEvent:Connect(function(eventName, data)
+    if type(eventName) ~= "string" then return end
+    data = type(data) == "table" and data or {}
+
+    if eventName == "Started" then
+        trade.active = true
+        trade.phase = "Offer"
+        trade.ownOffer = {}
+        trade.ownReady = false
+        trade.otherReady = false
+        trade.ownAccepted = false
+        trade.otherAccepted = false
+        trade.otherOfferCount = 0
+    elseif eventName == "Updated" then
+        trade.active = true
+        trade.phase = type(data.phase) == "string" and data.phase or "Offer"
+        trade.ownOffer = type(data.ownOffer) == "table" and data.ownOffer or {}
+
+        local otherCount = 0
+        if type(data.otherOffer) == "table" then
+            for _ in data.otherOffer do otherCount += 1 end
+        end
+        trade.otherOfferCount = otherCount
+
+        trade.ownReady      = data.ownReady == true
+        trade.otherReady    = data.otherReady == true
+        trade.ownAccepted   = data.ownAccepted == true
+        trade.otherAccepted = data.otherAccepted == true
+    elseif eventName == "Ended" then
+        trade.active = false
+        trade.phase = "Offer"
+        trade.ownOffer = {}
+        trade.ownReady = false
+        trade.otherReady = false
+        trade.ownAccepted = false
+        trade.otherAccepted = false
+    end
+end)
+
+--=====================================================================
+-- PLOT PICKUP
 --=====================================================================
 local function pickupPlacedUnits()
     local slots = deepUnwrap(DataController.Slots)
@@ -117,92 +176,170 @@ local function pickupPlacedUnits()
         return 0
     end
 
-    -- Collect slots in numeric order
     local slotList = {}
     for slotNum, data in pairs(slots) do
         if type(data) == "table" and data.unitId then
             slotList[#slotList + 1] = { slot = tonumber(slotNum) or slotNum, data = data }
         end
     end
-    table.sort(slotList, function(a, b)
-        return tonumber(a.slot) < tonumber(b.slot)
-    end)
+    table.sort(slotList, function(a, b) return tonumber(a.slot) < tonumber(b.slot) end)
 
     local removed = 0
     for _, item in ipairs(slotList) do
-        local entry  = item.data
-        local rarity = getRarity(entry)
-
+        local rarity = getRarity(item.data)
         if rarity and RARITY_FILTER[rarity] then
-            print(("[PICKUP] Slot %s → %s (%s)"):format(
-                tostring(item.slot), tostring(entry.name), rarity
-            ))
-            fire(InteractSlot, item.slot)     -- ← SimpleSpy-confirmed signature
+            print(("[PICKUP] Slot %s → %s (%s)"):format(tostring(item.slot), tostring(item.data.name), rarity))
+            fire(InteractSlot, item.slot)
             removed += 1
             task.wait(PICKUP_DELAY)
         end
     end
-
-    if removed > 0 then
-        print("[PICKUP] Waiting 1.5s for inventory to sync...")
-        task.wait(1.5)
-    end
+    if removed > 0 then task.wait(1.5) end
     return removed
 end
 
 --=====================================================================
--- Build offer list
+-- Build offer plan (what we WANT in the offer)
 --=====================================================================
 local function buildOffer()
     local inventory = deepUnwrap(DataController.Inventory)
-    if type(inventory) ~= "table" then
-        warn("[BUILD] Could not read inventory")
-        return {}
-    end
+    if type(inventory) ~= "table" then return {} end
 
     local wantConsumable = {}
     for _, n in ipairs(CONSUMABLES) do wantConsumable[n] = true end
 
-    local toTrade = {}
-    local unitCount = 0
-
+    local plan = {}
     for key, entry in pairs(inventory) do
         if type(key) == "string" and type(entry) == "table" and entry.name then
             local cfg = EntryRegistry.getEntryConfig(entry.name)
-
             if cfg and cfg.kind == "Unit" then
                 local rarity = getRarity(entry)
                 if rarity and RARITY_FILTER[rarity] then
                     local locked = entry.attributes and entry.attributes.locked == true
                     if not locked then
-                        toTrade[#toTrade + 1] = {
+                        plan[#plan + 1] = {
                             key = key,
-                            qty = math.max(1, tonumber(entry.amount) or 1),
+                            amount = math.max(1, tonumber(entry.amount) or 1),
                             label = entry.name .. " (" .. rarity .. ")",
                         }
-                        unitCount += 1
                     end
                 end
             elseif wantConsumable[entry.name] then
                 local amt = tonumber(entry.amount) or 0
                 if amt > 0 then
-                    toTrade[#toTrade + 1] = {
+                    plan[#plan + 1] = {
                         key = key,
-                        qty = math.floor(amt),
+                        amount = math.floor(amt),
                         label = entry.name .. " x" .. math.floor(amt),
                     }
-                    print("  [ITEM] " .. entry.name .. " x" .. math.floor(amt))
                 end
             end
         end
     end
-
-    print(("[BUILD] %d units, %d total entries"):format(unitCount, #toTrade))
-    return toTrade
+    return plan
 end
 
 --=====================================================================
--- Target
+-- Offer matching
+--=====================================================================
+local function plannedAmount(key, plan)
+    for _, e in ipairs(plan) do
+        if e.key == key then return e.amount end
+    end
+    return 0
+end
+
+local function offerMatchesPlan(plan)
+    for _, e in ipairs(plan) do
+        local have = tonumber(trade.ownOffer[e.key]) or 0
+        if have < e.amount then return false end
+    end
+    return true
+end
+
+--=====================================================================
+-- Push one chunk (mirrors original: 1000/100/10/1)
+--=====================================================================
+local function pushOneChunk(plan)
+    for _, e in ipairs(plan) do
+        local have    = tonumber(trade.ownOffer[e.key]) or 0
+        local missing = e.amount - have
+        if missing > 0 then
+            local chunk = 1
+            for _, step in ipairs({ 1000, 100, 10 }) do
+                if missing >= step then chunk = step; break end
+            end
+            fire(ChangeOffer, e.key, chunk)
+            return true   -- pushed something; caller should wait
+        end
+    end
+    return false          -- nothing left to push
+end
+
+--=====================================================================
+-- Wait until the offer matches the plan (with timeout)
+--=====================================================================
+local function waitForOfferSync(plan, timeout)
+    timeout = timeout or 15
+    local deadline = os.clock() + timeout
+    local lastPush = 0
+
+    while os.clock() < deadline do
+        if offerMatchesPlan(plan) then
+            return true
+        end
+        if os.clock() - lastPush >= OFFER_PUSH_DELAY then
+            if pushOneChunk(plan) then
+                lastPush = os.clock()
+            else
+                -- Nothing to push but plan not matched → server dropped something
+                return false
+            end
+        end
+        task.wait(0.05)
+    end
+    return false
+end
+
+--=====================================================================
+-- Ready up and *keep* it readied
+--=====================================================================
+-- Fires AdvanceTrade (Offer→Ready), then polls. If the server un-readies
+-- us (which is what causes the "un-ready" you saw), we re-fire until the
+-- ready state sticks or we time out.
+--=====================================================================
+local function holdReady()
+    for attempt = 1, READY_MAX_RETRIES do
+        if trade.ownReady then
+            print(("[READY] Hold confirmed on attempt %d"):format(attempt))
+            return true
+        end
+
+        print(("[READY] Firing AdvanceTrade (attempt %d)"):format(attempt))
+        fire(AdvanceTrade)
+
+        -- Give the server up to READY_RETRY_DELAY to acknowledge
+        local deadline = os.clock() + READY_RETRY_DELAY
+        while os.clock() < deadline do
+            if trade.ownReady then
+                print("[READY] Ready state confirmed")
+                return true
+            end
+            task.wait(0.1)
+        end
+
+        -- If phase flipped straight to Confirm, that means ready already stuck
+        if trade.phase == "Confirm" then
+            print("[READY] Phase is Confirm — ready already committed")
+            return true
+        end
+    end
+    warn("[READY] Could not hold ready state after " .. READY_MAX_RETRIES .. " attempts")
+    return false
+end
+
+--=====================================================================
+-- Main
 --=====================================================================
 local function findTarget()
     for _, p in Players:GetPlayers() do
@@ -216,9 +353,6 @@ local function findTarget()
     return nil
 end
 
---=====================================================================
--- Main
---=====================================================================
 local target = findTarget()
 if not target then
     warn("[ERROR] Target not found: " .. TARGET_NAME)
@@ -229,27 +363,78 @@ print("[MAIN] Step 1: Picking up matching units from plot...")
 local picked = pickupPlacedUnits()
 print(("[MAIN] Picked up %d unit(s)"):format(picked))
 
-print("[MAIN] Step 2: Building offer...")
-local toTrade = buildOffer()
-if #toTrade == 0 then
+print("[MAIN] Step 2: Building offer plan...")
+local plan = buildOffer()
+print(("[MAIN] %d entries planned"):format(#plan))
+if #plan == 0 then
     warn("[ERROR] Nothing to trade")
     return
 end
 
 print("[MAIN] Step 3: Requesting trade with " .. target.Name)
 fire(RequestTrade, target)
-task.wait(3)
 
-print("[MAIN] Step 4: Adding items to offer...")
-for _, item in ipairs(toTrade) do
-    fire(ChangeOffer, item.key, item.qty)
-    print("[OK] " .. item.label)
-    task.wait(ADD_DELAY)
+-- Wait up to 10s for the trade to actually start
+local startDeadline = os.clock() + 10
+while not trade.active and os.clock() < startDeadline do
+    task.wait(0.1)
+end
+if not trade.active then
+    warn("[ERROR] Trade did not start — did the alt accept the request?")
+    return
+end
+print("[MAIN] Trade started")
+
+print("[MAIN] Step 4: Pushing offer (server-confirmed)...")
+local synced = waitForOfferSync(plan, 20)
+if not synced then
+    warn("[ERROR] Offer never matched the plan in time.")
+    -- Dump what the server thinks we have vs what we wanted
+    print("  Server ownOffer:")
+    for k, v in pairs(trade.ownOffer) do print(("    %s = %s"):format(tostring(k), tostring(v))) end
+    print("  Planned:")
+    for _, e in ipairs(plan) do print(("    %s = %d  (%s)"):format(e.key, e.amount, e.label)) end
+    fire(CancelTrade)
+    return
 end
 
-print("[MAIN] Step 5: Ready / Confirm")
-task.wait(1)
-fire(AdvanceTrade)   -- Offer → Ready
-task.wait(2)
-fire(AdvanceTrade)   -- Ready → Confirm
-print("[DONE]")
+print("[MAIN] Offer matches plan. Waiting for settle...")
+task.wait(OFFER_SETTLE_WAIT)
+
+-- Re-verify after the settle, because that's exactly when the server
+-- likes to drop the "unexpected" entry
+if not offerMatchesPlan(plan) then
+    warn("[MAIN] Offer changed after settle — re-syncing")
+    local ok = waitForOfferSync(plan, 10)
+    if not ok then
+        warn("[ERROR] Server keeps rejecting part of the offer. Cancelling.")
+        fire(CancelTrade)
+        return
+    end
+end
+
+print("[MAIN] Step 5: Readying up")
+holdReady()
+
+-- Step 6: wait for partner to ready, then confirm
+print("[MAIN] Step 6: Waiting for partner ready...")
+local partnerDeadline = os.clock() + 60
+while not trade.otherReady and os.clock() < partnerDeadline do
+    -- If our ready got un-set while waiting, re-fire
+    if not trade.ownReady and trade.phase ~= "Confirm" then
+        print("[MAIN] Ready got un-set while waiting — re-firing")
+        holdReady()
+    end
+    task.wait(0.3)
+end
+
+if trade.phase == "Confirm" then
+    print("[MAIN] Phase is Confirm — confirming")
+    for attempt = 1, READY_MAX_RETRIES do
+        if trade.ownAccepted then break end
+        fire(AdvanceTrade)
+        task.wait(0.5)
+    end
+end
+
+print("[DONE] Trade complete")
