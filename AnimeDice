@@ -1,694 +1,191 @@
---=====================================================================
--- Anime Dice — Auto Trade (Sender-only, hardcoded recipient)
--- Sends everything matching filters to Only1sherif, one trade at a time.
--- Only this account (the main) needs to run it. Alt just clicks 3 times.
---=====================================================================
+-- Anime Dice Auto-Trade (using DataController + EntryRegistry)
+-- Based on the pattern from the de-obfuscated script
 
-local TARGET_NAME = "Only1sherifalt1"
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
 
---=====================================================================
--- Services / framework
---=====================================================================
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Players           = game:GetService("Players")
-local LocalPlayer       = Players.LocalPlayer
+local TARGET_NAME = "only1Sherifalt1"
+local ADD_DELAY = 0.7
 
-local Framework     = ReplicatedStorage:WaitForChild("Framework")
-local Packages      = Framework:WaitForChild("Packages")
-local Features      = Framework:WaitForChild("Features")
-local NetworkFolder = Framework:WaitForChild("Network")
+-- Rarity filter: set to true for rarities you want to send
+local RARITY_FILTER = {
+	["Celestial"] = true,
+	["Secret I"] = true,
+	["Secret II"] = true,
+	["Mythical"] = true,
+}
 
-local NetworkPkg     = require(Packages:WaitForChild("Network"))
-local ClientComm     = NetworkPkg.ClientComm
+-- Consumables to send (if owned)
+local CONSUMABLES = { "Luck III", "Luck II", "Luck I", "Lucky Spin", "Gems" }
 
-local DataController = require(Features.Data.DataController)
-local EntryRegistry  = require(Features.Inventory.EntryRegistry)
-local TradeConfig    = require(Features.Trading.TradeConfig)
-
---=====================================================================
--- Rayfield
---=====================================================================
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
-
-local Window = Rayfield:CreateWindow({
-    Name = "Trade Sender",
-    LoadingTitle = "Loading...",
-    LoadingSubtitle = "Sender-only",
-    ConfigurationSaving = { Enabled = false },
-    KeySystem = false,
-})
-
-local Tab = Window:CreateTab("Send", nil)
-
---=====================================================================
--- TradeService remotes (same as original script)
---=====================================================================
-local tradeComm = ClientComm.new(NetworkFolder, false, "TradeService")
-
-local S_requestTrade     = tradeComm:GetSignal("RequestTrade")
-local S_changeOffer      = tradeComm:GetSignal("ChangeOffer")
-local S_advanceTrade     = tradeComm:GetSignal("AdvanceTrade")
-local S_cancelTrade      = tradeComm:GetSignal("CancelTrade")
-local S_setRequestsOn    = tradeComm:GetSignal("SetTradeRequestsEnabled")
-local S_tradeEvent       = tradeComm:GetSignal("TradeEvent")
-
-local function fire(sig, ...)
-    if not sig then return false end
-    local args = table.pack(...)
-    return pcall(function()
-        sig:Fire(table.unpack(args, 1, args.n))
-    end)
+-- Get DataController and EntryRegistry
+local DataController = RS.Framework.Features.Data.DataController
+local ok, DC = pcall(require, DataController)
+if not ok then
+	warn("[ERROR] Could not load DataController")
+	return
 end
 
---=====================================================================
--- Entry helpers
---=====================================================================
-local function getOwnedEntries()
-    local ok, result = pcall(function()
-        return DataController.Inventory()
-    end)
-    return ok and result or {}
+local ER = RS.Framework.Features.Inventory.Kinds.Unit.UnitConfig
+local ok2, EntryRegistry = pcall(require, ER)
+if not ok2 then
+	warn("[ERROR] Could not load EntryRegistry")
+	return
 end
 
-local function getPlacedSet()
-    local set = {}
-    local ok, slots = pcall(function()
-        return DataController.Slots()
-    end)
-    if ok and type(slots) == "table" then
-        for _, v in slots do
-            if type(v) == "table" and type(v.unitId) == "string" then
-                set[v.unitId] = true
-            end
-        end
-    end
-    return set
+-- Unwrap: if value is callable (reactive getter), call it
+local function unwrap(value)
+	if type(value) == "function" then
+		local ok, result = pcall(value)
+		return ok and result or nil
+	end
+	local mt = type(value) == "table" and getmetatable(value)
+	if mt and mt.__call then
+		local ok, result = pcall(function() return value() end)
+		return ok and result or value
+	end
+	return value
 end
 
-local function getAttr(entry, name)
-    if type(entry) ~= "table" or type(entry.attributes) ~= "table" then
-        return nil
-    end
-    return entry.attributes[name]
+-- Deep unwrap: flatten a reactive table + merge cached values
+local function deepUnwrap(source)
+	local out = {}
+	local flat = unwrap(source)
+	if type(flat) == "table" then
+		for k, v in pairs(flat) do
+			out[k] = v
+		end
+	end
+	if type(source) == "table" then
+		local cached = rawget(source, "___C")
+		if type(cached) == "table" then
+			for k, v in pairs(cached) do
+				if out[k] == nil then
+					local inner = unwrap(v)
+					if inner ~= nil then
+						out[k] = inner
+					end
+				end
+			end
+		end
+	end
+	return out
 end
 
-local function isLocked(entry)
-    return getAttr(entry, "locked") == true
+-- Get your inventory
+local inventory = deepUnwrap(DC.Inventory)
+if not inventory or type(inventory) ~= "table" then
+	warn("[ERROR] Could not read inventory")
+	return
 end
 
+-- Get entry config by name (from EntryRegistry)
+local function getConfig(name)
+	if not EntryRegistry then return nil end
+	return EntryRegistry[name] or nil
+end
+
+-- Get rarity of an entry
 local function getRarity(entry)
-    local cfg = entry and EntryRegistry.getEntryConfig(entry.name)
-    if not cfg or cfg.kind ~= "Unit" then return nil end
-    if type(cfg.getRarity) == "function" then
-        local ok, rarity = pcall(cfg.getRarity, entry.attributes or {})
-        if ok and type(rarity) == "string" then return rarity end
-    end
-    if type(cfg.rarity) == "string" then return cfg.rarity end
-    return nil
+	if type(entry) ~= "table" or not entry.name then
+		return nil
+	end
+	local cfg = getConfig(entry.name)
+	if not cfg then return nil end
+	
+	-- Try dynamic getRarity function
+	if type(cfg.getRarity) == "function" then
+		local attrs = entry.attributes or {}
+		local ok, rarity = pcall(cfg.getRarity, attrs)
+		if ok and type(rarity) == "string" then
+			return rarity
+		end
+	end
+	
+	-- Fall back to static rarity
+	if type(cfg.rarity) == "string" then
+		return cfg.rarity
+	end
+	return nil
 end
 
-local function inSet(set, value)
-    if type(set) ~= "table" then return false end
-    return set[value] == true
+-- Build trade list
+local toTrade = {}
+local placedUnitIds = {}
+
+print("[SCAN] Building trade offer...")
+
+-- 1) Scan for units matching rarity filter
+local unitCount = 0
+for key, entry in pairs(inventory) do
+	if type(key) == "string" and type(entry) == "table" and entry.name then
+		local cfg = getConfig(entry.name)
+		if cfg and cfg.kind == "Unit" then
+			local rarity = getRarity(entry)
+			if rarity and RARITY_FILTER[rarity] then
+				table.insert(toTrade, { key, 1, entry.name .. " (" .. rarity .. ")" })
+				unitCount = unitCount + 1
+				if unitCount <= 5 then
+					print("  [UNIT] " .. entry.name .. " (" .. rarity .. ")")
+				end
+			end
+		end
+	end
+end
+print("[SCAN] Found " .. unitCount .. " matching units")
+
+-- 2) Add consumables
+print("[SCAN] Looking for consumables...")
+for _, cname in ipairs(CONSUMABLES) do
+	local item = inventory[cname]
+	if type(item) == "table" and type(item.amount) == "number" and item.amount > 0 then
+		table.insert(toTrade, { cname, item.amount, cname .. " x" .. item.amount })
+		print("  [FOUND] " .. cname .. " x" .. item.amount)
+	end
 end
 
-local function unwrap(getter)
-    local ok, result = pcall(function()
-        if type(getter) == "function" then return getter() end
-        return getter
-    end)
-    return ok and result or nil
+if #toTrade == 0 then
+	warn("[ERROR] Nothing to trade!")
+	return
 end
 
---=====================================================================
--- Dropdown source lists
---=====================================================================
-local RARITY_LIST = {
-    "Common","Uncommon","Rare","Epic","Legendary","Mythical",
-    "Exclusive","Exotic","Divine","Celestial","Secret I","Secret II"
-}
+-- Get remotes
+local network = RS:FindFirstChild("Network")
+local svc = network and network:FindFirstChild("TradeService")
+local RE = svc and svc:FindFirstChild("RE")
+local RequestTrade = RE and RE:FindFirstChild("RequestTrade")
+local ChangeOffer = RE and RE:FindFirstChild("ChangeOffer")
+local AdvanceTrade = RE and RE:FindFirstChild("AdvanceTrade")
 
-local CHARACTER_LIST = {}
-do
-    local entries = EntryRegistry.entriesOfKind("Unit")
-    if type(entries) == "table" then
-        for name in entries do
-            if type(name) == "string" then
-                CHARACTER_LIST[#CHARACTER_LIST + 1] = name
-            end
-        end
-        table.sort(CHARACTER_LIST)
-    end
+if not (RequestTrade and ChangeOffer and AdvanceTrade) then
+	warn("[ERROR] Trade remotes not found")
+	return
 end
 
-local ITEM_LIST = {}
-do
-    local seen = {}
-    for _, kind in { "Boost", "Spin", "Token" } do
-        local entries = EntryRegistry.entriesOfKind(kind)
-        if type(entries) == "table" then
-            for name in entries do
-                if type(name) == "string"
-                    and not seen[name]
-                    and not table.find(TradeConfig.UNTRADEABLE_ENTRIES, name)
-                then
-                    seen[name] = true
-                    ITEM_LIST[#ITEM_LIST + 1] = name
-                end
-            end
-        end
-    end
-    table.sort(ITEM_LIST)
+-- Get target
+local target = Players:FindFirstChild(TARGET_NAME)
+if not target then
+	warn("[ERROR] Target not found")
+	return
 end
 
---=====================================================================
--- Settings
---=====================================================================
-local S = {
-    AutoTrade              = false,
-    AutoConfirm            = true,
-    AutoTradeEnableRequests= true,
-    AutoTradeLoop          = true,
-    AutoTradeDelay         = 5,     -- longer default so you have time on alt
-    AutoTradeMaxEntries    = 20,
+-- Execute trade
+print("[TRADE] Requesting trade with " .. #toTrade .. " items...")
+task.wait(3)
+RequestTrade:FireServer(target)
+task.wait(3)
 
-    GiveUnits              = false,
-    Rarities               = {},
-    Characters             = {},
-    SkipLocked             = true,
-    SkipPlaced             = true,
-
-    GiveItems              = false,
-    Items                  = {},
-    SendAmount             = "All",
-    KeepAmount             = 0,
-}
-
---=====================================================================
--- UI
---=====================================================================
-Tab:CreateSection(("Sending to: %s"):format(TARGET_NAME))
-
-Tab:CreateToggle({
-    Name = "Auto Trade",
-    CurrentValue = false,
-    Flag = "AutoTrade",
-    Callback = function(v) S.AutoTrade = v end,
-})
-
-Tab:CreateToggle({
-    Name = "Auto Confirm",
-    CurrentValue = true,
-    Flag = "AutoConfirm",
-    Callback = function(v) S.AutoConfirm = v end,
-})
-
-Tab:CreateToggle({
-    Name = "Keep Trade Requests Enabled",
-    CurrentValue = true,
-    Flag = "KeepRequests",
-    Callback = function(v) S.AutoTradeEnableRequests = v end,
-})
-
-Tab:CreateToggle({
-    Name = "Repeat Until Empty",
-    CurrentValue = true,
-    Flag = "Loop",
-    Callback = function(v) S.AutoTradeLoop = v end,
-})
-
-Tab:CreateSlider({
-    Name = "Delay Between Trades (s)",
-    Range = { 1, 30 },
-    Increment = 1,
-    CurrentValue = 5,
-    Flag = "Delay",
-    Callback = function(v) S.AutoTradeDelay = v end,
-})
-
-Tab:CreateSlider({
-    Name = "Max Unique Entries",
-    Range = { 1, 20 },
-    Increment = 1,
-    CurrentValue = 20,
-    Flag = "MaxEntries",
-    Callback = function(v) S.AutoTradeMaxEntries = v end,
-})
-
-local statusLabel = Tab:CreateLabel("Idle")
-local countLabel  = Tab:CreateLabel("Trades: 0")
-
-Tab:CreateButton({
-    Name = "Cancel Current Trade",
-    Callback = function() fire(S_cancelTrade) end,
-})
-
-Tab:CreateSection("Give Units")
-Tab:CreateToggle({
-    Name = "Give Units",
-    CurrentValue = false,
-    Flag = "GiveUnits",
-    Callback = function(v) S.GiveUnits = v end,
-})
-Tab:CreateDropdown({
-    Name = "Rarities",
-    Options = RARITY_LIST,
-    CurrentOption = {},
-    MultipleOptions = true,
-    Flag = "Rarities",
-    Callback = function(opts)
-        S.Rarities = {}
-        if type(opts) == "table" then
-            for _, v in opts do S.Rarities[v] = true end
-        end
-    end,
-})
-Tab:CreateDropdown({
-    Name = "Characters",
-    Options = CHARACTER_LIST,
-    CurrentOption = {},
-    MultipleOptions = true,
-    Flag = "Chars",
-    Callback = function(opts)
-        S.Characters = {}
-        if type(opts) == "table" then
-            for _, v in opts do S.Characters[v] = true end
-        end
-    end,
-})
-Tab:CreateToggle({
-    Name = "Skip Locked Units",
-    CurrentValue = true,
-    Flag = "SkipLocked",
-    Callback = function(v) S.SkipLocked = v end,
-})
-Tab:CreateToggle({
-    Name = "Skip Placed Units",
-    CurrentValue = true,
-    Flag = "SkipPlaced",
-    Callback = function(v) S.SkipPlaced = v end,
-})
-
-Tab:CreateSection("Give Items")
-Tab:CreateToggle({
-    Name = "Give Items",
-    CurrentValue = false,
-    Flag = "GiveItems",
-    Callback = function(v) S.GiveItems = v end,
-})
-Tab:CreateDropdown({
-    Name = "Items",
-    Options = ITEM_LIST,
-    CurrentOption = {},
-    MultipleOptions = true,
-    Flag = "Items",
-    Callback = function(opts)
-        S.Items = {}
-        if type(opts) == "table" then
-            for _, v in opts do S.Items[v] = true end
-        end
-    end,
-})
-Tab:CreateDropdown({
-    Name = "Send Amount Per Item",
-    Options = { "1", "10", "100", "1000", "All" },
-    CurrentOption = { "All" },
-    MultipleOptions = false,
-    Flag = "SendAmount",
-    Callback = function(opt)
-        S.SendAmount = type(opt) == "table" and opt[1] or opt
-    end,
-})
-Tab:CreateSlider({
-    Name = "Keep Amount Per Item",
-    Range = { 0, 100 },
-    Increment = 1,
-    CurrentValue = 0,
-    Flag = "KeepAmount",
-    Callback = function(v) S.KeepAmount = v end,
-})
-
---=====================================================================
--- Runtime state
---=====================================================================
-local lastTradeEndTime    = 0
-local statusText          = "Idle"
-local completedTrades     = 0
-local plannedOffer        = nil
-local lastRequestSent     = 0
-local lastAdvance         = 0
-local lastOfferPush       = 0
-local lastRequestsEnable  = 0
-local awaitingPartnerReady   = false
-local awaitingPartnerConfirm = false
-
-local tradeState = {
-    [1]=false, [2]=nil, [3]="Offer", [4]={}, [5]=0,
-    [6]=false, [7]=false, [8]=false, [9]=false, [10]=0
-}
-
---=====================================================================
--- Target resolution
---=====================================================================
-local function getTargetPlayer()
-    for _, p in Players:GetPlayers() do
-        if p ~= LocalPlayer
-            and (string.lower(p.Name) == string.lower(TARGET_NAME)
-                 or string.lower(p.DisplayName) == string.lower(TARGET_NAME))
-        then
-            return p
-        end
-    end
-    return nil
+print("[TRADE] Adding items...")
+for _, item in ipairs(toTrade) do
+	local key, qty, label = item[1], item[2], item[3]
+	local ok, err = pcall(function()
+		ChangeOffer:FireServer(key, qty)
+	end)
+	print(ok and ("[OK] " .. label) or ("[FAIL] " .. label .. ": " .. tostring(err)))
+	task.wait(ADD_DELAY)
 end
 
---=====================================================================
--- Plan builder
---=====================================================================
-local function getKeepAmount()
-    return math.max(0, math.floor(tonumber(S.KeepAmount) or 0))
-end
-
-local function getSendAmount()
-    return tonumber(S.SendAmount) or math.huge
-end
-
-local function getMaxEntries()
-    return math.clamp(math.floor(tonumber(S.AutoTradeMaxEntries) or 20), 1, TradeConfig.MAX_UNIQUE_ENTRIES)
-end
-
-local function buildOfferPlan()
-    local plan = {}
-    if not (S.GiveUnits or S.GiveItems) then return plan end
-
-    local placedSet  = S.SkipPlaced and getPlacedSet() or {}
-    local keepAmount = getKeepAmount()
-    local sendAmount = getSendAmount()
-    local maxEntries = getMaxEntries()
-
-    for key, entry in getOwnedEntries() do
-        if #plan >= maxEntries then break end
-        if type(key) == "string" and type(entry) == "table" then
-            local cfg = EntryRegistry.getEntryConfig(entry.name)
-            if cfg and not table.find(TradeConfig.UNTRADEABLE_ENTRIES, entry.name) then
-                if cfg.kind == "Unit" then
-                    if S.GiveUnits
-                        and not (S.SkipLocked and isLocked(entry))
-                        and not (S.SkipPlaced and placedSet[key])
-                        and inSet(S.Characters, entry.name)
-                        and inSet(S.Rarities, getRarity(entry))
-                    then
-                        plan[#plan + 1] = {
-                            key = key,
-                            amount = math.max(1, tonumber(entry.amount) or 1)
-                        }
-                    end
-                elseif S.GiveItems then
-                    if next(S.Items) == nil or S.Items[entry.name] then
-                        local have = tonumber(entry.amount) or 0
-                        local give = math.min(have - keepAmount, sendAmount)
-                        if give >= 1 then
-                            plan[#plan + 1] = { key = key, amount = math.floor(give) }
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return plan
-end
-
-local function getPlannedAmount(key)
-    if not plannedOffer then return 0 end
-    for _, e in plannedOffer do
-        if e.key == key then return e.amount end
-    end
-    return 0
-end
-
-local function offerMatchesPlan()
-    if not plannedOffer then return false end
-    for _, e in plannedOffer do
-        local have = tonumber(tradeState[4][e.key]) or 0
-        if have < e.amount then return false end
-    end
-    return true
-end
-
-local function hasUnexpectedOffer()
-    for key, amount in tradeState[4] do
-        if (tonumber(amount) or 0) > getPlannedAmount(key) then
-            return true
-        end
-    end
-    return false
-end
-
-local function resetTradeState()
-    tradeState[1]  = false
-    tradeState[2]  = nil
-    tradeState[3]  = "Offer"
-    tradeState[4]  = {}
-    tradeState[5]  = 0
-    tradeState[6]  = false
-    tradeState[7]  = false
-    tradeState[8]  = false
-    tradeState[9]  = false
-    plannedOffer   = nil
-    awaitingPartnerReady   = false
-    awaitingPartnerConfirm = false
-end
-
---=====================================================================
--- Notify helpers
---=====================================================================
-local function notify(title, content)
-    pcall(function()
-        Rayfield:Notify({
-            Title = title,
-            Content = content,
-            Duration = 5,
-        })
-    end)
-end
-
---=====================================================================
--- TradeEvent listener
---=====================================================================
-S_tradeEvent:Connect(function(eventName, data)
-    if type(eventName) ~= "string" then return end
-    data = type(data) == "table" and data or {}
-
-    if eventName == "Started" then
-        resetTradeState()
-        tradeState[1]  = true
-        tradeState[2]  = data.partner
-        tradeState[10] = os.clock()
-    elseif eventName == "Updated" then
-        tradeState[1] = true
-        tradeState[2] = data.partner or tradeState[2]
-        tradeState[3] = type(data.phase) == "string" and data.phase or "Offer"
-        tradeState[4] = type(data.ownOffer) == "table" and data.ownOffer or {}
-        local otherCount = 0
-        if type(data.otherOffer) == "table" then
-            for _ in data.otherOffer do otherCount += 1 end
-        end
-        tradeState[5] = otherCount
-        tradeState[6] = data.ownReady      == true
-        tradeState[7] = data.otherReady    == true
-        tradeState[8] = data.ownAccepted   == true
-        tradeState[9] = data.otherAccepted == true
-    elseif eventName == "Ended" then
-        local reason = tostring(data.reason or "Unknown")
-        if reason == "Completed" then
-            completedTrades += 1
-        end
-        resetTradeState()
-        lastTradeEndTime = os.clock()
-        if S.AutoTrade then
-            notify("Trade ended", reason)
-        end
-    end
-end)
-
---=====================================================================
--- Account / requests-enabled checks
---=====================================================================
-local function areTradeRequestsEnabled()
-    return unwrap(DataController.TradeRequestsEnabled) == true
-end
-
-local function checkEligibility()
-    if LocalPlayer.AccountAge < TradeConfig.MIN_ACCOUNT_AGE then
-        return ("Account must be %d days old"):format(TradeConfig.MIN_ACCOUNT_AGE)
-    end
-    local rolls = tonumber(unwrap(DataController.Rolls)) or 0
-    if rolls < TradeConfig.MIN_ROLLS then
-        return ("Need %d rolls (%d)"):format(TradeConfig.MIN_ROLLS, rolls)
-    end
-    return nil
-end
-
---=====================================================================
--- Offer pushing + ready/confirm
---=====================================================================
-local function pushNextChunk()
-    if os.clock() - lastOfferPush < 0.12 then return end
-    for _, e in plannedOffer do
-        local have = tonumber(tradeState[4][e.key]) or 0
-        local missing = e.amount - have
-        if missing > 0 then
-            local chunk = 1
-            for _, step in { 1000, 100, 10 } do
-                if missing >= step then chunk = step; break end
-            end
-            lastOfferPush = os.clock()
-            fire(S_changeOffer, e.key, chunk)
-            return
-        end
-    end
-end
-
-local function readyOrConfirm()
-    if os.clock() - lastAdvance < 0.35 then return end
-    lastAdvance = os.clock()
-    fire(S_advanceTrade)
-end
-
---=====================================================================
--- Active trade tick
---=====================================================================
-local function tickActiveTrade()
-    if hasUnexpectedOffer() then
-        statusText = "Cancelling, unexpected offer"
-        fire(S_cancelTrade)
-        return
-    end
-
-    if tradeState[3] == "Countdown" then
-        statusText = "Countdown"
-        return
-    end
-
-    -- Push offer until it matches the plan
-    if not plannedOffer then plannedOffer = buildOfferPlan() end
-    if #plannedOffer == 0 then
-        statusText = "Nothing matches the give filters"
-        fire(S_cancelTrade)
-        return
-    end
-    if not offerMatchesPlan() then
-        statusText = ("Offering (%d entries)"):format(#plannedOffer)
-        pushNextChunk()
-        return
-    end
-
-    -- Phase: Offer → ready up
-    if tradeState[3] == "Offer" then
-        if not tradeState[6] then
-            statusText = "Readying up"
-            readyOrConfirm()
-        else
-            if not awaitingPartnerReady then
-                awaitingPartnerReady = true
-                notify("Trade", "Main is ready. Click READY on the alt.")
-            end
-            statusText = "Waiting for partner to ready"
-        end
-        return
-    end
-
-    -- Phase: Confirm → confirm
-    if tradeState[3] == "Confirm" then
-        if not S.AutoConfirm then
-            statusText = "Waiting for manual confirm"
-            return
-        end
-        if not tradeState[8] then
-            statusText = "Confirming"
-            readyOrConfirm()
-        else
-            if not awaitingPartnerConfirm then
-                awaitingPartnerConfirm = true
-                notify("Trade", "Main confirmed. Click CONFIRM on the alt.")
-            end
-            statusText = "Waiting for partner confirm"
-        end
-    end
-end
-
---=====================================================================
--- Find-a-trade tick
---=====================================================================
-local function tickFindTrade()
-    if os.clock() - lastTradeEndTime < S.AutoTradeDelay then
-        statusText = ("Cooling down (%.0fs)"):format(S.AutoTradeDelay - (os.clock() - lastTradeEndTime))
-        return
-    end
-
-    plannedOffer = buildOfferPlan()
-    if #plannedOffer == 0 then
-        statusText = "Nothing matches the give filters"
-        return
-    end
-
-    if not S.AutoTradeLoop and completedTrades > 0 then
-        statusText = "Finished — turn Auto Trade off or it will keep requesting"
-        return
-    end
-
-    if os.clock() - lastRequestSent < 1 then return end
-
-    local target = getTargetPlayer()
-    if not target then
-        statusText = "Waiting for " .. TARGET_NAME .. " to join server"
-        return
-    end
-
-    lastRequestSent = os.clock()
-    statusText = "Requesting " .. target.Name
-    notify("Trade", "Request sent. Click ACCEPT on the alt.")
-    fire(S_requestTrade, target)
-end
-
---=====================================================================
--- Main tick
---=====================================================================
-local function tickAutoTrade()
-    local eligibility = checkEligibility()
-    if eligibility then statusText = eligibility; return end
-
-    if S.AutoTradeEnableRequests
-        and not areTradeRequestsEnabled()
-        and os.clock() - lastRequestsEnable >= 2
-    then
-        lastRequestsEnable = os.clock()
-        fire(S_setRequestsOn, true)
-    end
-
-    if tradeState[1] then
-        tickActiveTrade()
-    else
-        tickFindTrade()
-    end
-end
-
---=====================================================================
--- Driver loop
---=====================================================================
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        if S.AutoTrade then
-            pcall(tickAutoTrade)
-        elseif statusText ~= "Idle" then
-            statusText = "Idle"
-        end
-        pcall(function()
-            statusLabel:Set(statusText)
-            countLabel:Set("Trades: " .. tostring(completedTrades))
-        end)
-    end
-end)
-
-notify("Trade Sender ready", "Target: " .. TARGET_NAME)
+print("[TRADE] Advancing...")
+task.wait(1)
+AdvanceTrade:FireServer()
+print("[DONE]")
