@@ -141,7 +141,7 @@ local F = {
     AutoTower = false, AutoTowerEquip = false,
     AutoTowerHideUI = false,
 }
-_G.AutoTradeEnabled = false
+_G.AutoTradeEnabled = true
 
 --=====================================================================
 -- Helpers
@@ -317,7 +317,7 @@ if Rayfield then
 
         -- Farm
         FarmTab:CreateSection("Rolling")
-        FarmTab:CreateToggle({ Name = "Auto Roll", CurrentValue = false, Flag = "AutoRoll",
+        FarmTab:CreateToggle({ Name = "Auto Roll", CurrentValue = true, Flag = "AutoRoll",
             Callback = function(v) F.AutoRoll = v end })
         FarmTab:CreateSlider({ Name = "Roll Speed", Range = { 0.05, 2 }, Increment = 0.05,
             CurrentValue = 0.15, Flag = "AutoRollDelay",
