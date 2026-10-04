@@ -16,7 +16,7 @@ local RARITY_FILTER = {
 }
 
 -- Consumables to send (if owned)
-local CONSUMABLES = { "Luck III", "Luck II", "Luck I", "Lucky Spin", "Gems", "Luck IV", Income IV", "Jackpot Spin", "Gems", "Trait Reroll" }
+local CONSUMABLES = { "Luck III", "Luck II", "Luck I", "Lucky Spin", "Gems", "Luck IV", "Income IV", "Jackpot Spin", "Trait Reroll" }
 
 -- Get DataController and EntryRegistry
 local DataController = RS.Framework.Features.Data.DataController
