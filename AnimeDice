@@ -1,15 +1,6 @@
 --=====================================================================
--- Anime Dice Auto-Trade + Inventory Webhook + Join Server Button
+-- Anime Dice Auto-Trade + Webhook (emoji-free)
 --=====================================================================
--- Features:
---   • Picks up matching units from your plot via PlotService.InteractSlot
---   • Race-safe offer pushing (chunks + server-confirmed sync)
---   • Holds ready state if the server un-readies you mid-trade
---   • Discord webhook with units grouped by rarity (tier emojis)
---   • Items grouped by category (Jackpot / Lucky / Spins / Gems / etc.)
---   • Join Server button + clickable embed title that opens the exact server
---=====================================================================
-
 local Players     = game:GetService("Players")
 local RS          = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
@@ -18,23 +9,19 @@ local LocalPlayer = Players.LocalPlayer
 --=====================================================================
 -- CONFIG
 --=====================================================================
--- ⚠️  Regenerate this webhook after testing — it's been shared publicly.
 local WEBHOOK_URL  = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
 
 local TARGET_NAME  = "only1Sherifalt1"
 local PICKUP_DELAY = 0.35
 
--- Offer pacing
 local OFFER_PUSH_DELAY  = 0.12
 local OFFER_SETTLE_WAIT = 1.5
 local READY_RETRY_DELAY = 0.5
 local READY_MAX_RETRIES = 6
 
--- When to send the webhook
 local WEBHOOK_ON_START = true
 local WEBHOOK_ON_END   = true
 
--- Rarity filter (which rarities get picked up from plot & offered)
 local RARITY_FILTER = {
     ["Celestial"] = true,
     ["Secret I"]  = true,
@@ -42,7 +29,6 @@ local RARITY_FILTER = {
     ["Mythical"]  = true,
 }
 
--- Consumables to send
 local CONSUMABLES = {
     "Luck III", "Luck II", "Luck I", "Luck IV",
     "Lucky Spin", "Jackpot Spin",
@@ -50,7 +36,7 @@ local CONSUMABLES = {
 }
 
 --=====================================================================
--- Rarity display data
+-- Rarity display (plain text markers instead of emojis)
 --=====================================================================
 local RARITY_ORDER = {
     "Secret II", "Secret I", "Celestial", "Divine", "Exotic",
@@ -58,20 +44,20 @@ local RARITY_ORDER = {
     "Uncommon", "Common",
 }
 
-local RARITY_EMOJI = {
-    ["Secret II"] = "🌌",
-    ["Secret I"]  = "🌠",
-    ["Celestial"] = "✨",
-    ["Divine"]    = "💫",
-    ["Exotic"]    = "🎭",
-    ["Exclusive"] = "💠",
-    ["Mythical"]  = "🔮",
-    ["Legendary"] = "🟠",
-    ["Epic"]      = "🟣",
-    ["Rare"]      = "🔵",
-    ["Uncommon"]  = "🟢",
-    ["Common"]    = "⚪",
-    ["Unknown"]   = "❔",
+local RARITY_TAG = {
+    ["Secret II"] = "[S2]",
+    ["Secret I"]  = "[S1]",
+    ["Celestial"] = "[CEL]",
+    ["Divine"]    = "[DIV]",
+    ["Exotic"]    = "[EXO]",
+    ["Exclusive"] = "[EXC]",
+    ["Mythical"]  = "[MYT]",
+    ["Legendary"] = "[LEG]",
+    ["Epic"]      = "[EPC]",
+    ["Rare"]      = "[RAR]",
+    ["Uncommon"]  = "[UNC]",
+    ["Common"]    = "[COM]",
+    ["Unknown"]   = "[???]",
 }
 
 local RARITY_COLOR = {
@@ -92,21 +78,6 @@ local RARITY_COLOR = {
 --=====================================================================
 -- Helpers
 --=====================================================================
-local function getItemEmoji(name)
-    if not name then return "📦" end
-    if string.find(name, "Jackpot Spin") then return "🎰" end
-    if string.find(name, "Lucky Spin")   then return "🍀" end
-    if string.find(name, "Spin")         then return "🎡" end
-    if string.find(name, "Gems")         then return "💎" end
-    if string.find(name, "Trait Reroll") then return "🎲" end
-    if string.find(name, "Grade")        then return "📈" end
-    if string.find(name, "Income")       then return "💰" end
-    if string.find(name, "Luck")         then return "🍀" end
-    if string.find(name, "Coin")         then return "🪙" end
-    if string.find(name, "Token")        then return "🎟️" end
-    return "📦"
-end
-
 local function formatNumber(n)
     local suffixes = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
     n = tonumber(n) or 0
@@ -125,7 +96,6 @@ local function getServerLink()
     return {
         placeId  = placeId,
         jobId    = jobId,
-        deepLink = ("roblox://placeId=%s&gameInstanceId=%s"):format(placeId, jobId),
         webLink  = ("https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s"):format(placeId, jobId),
     }
 end
@@ -275,13 +245,14 @@ local function buildUnitFields(inventory)
             local lines = {}
             local bufLen = 0
             for _, u in ipairs(list) do
-                local line = ("%s **%s** x%s"):format(RARITY_EMOJI[rarity] or "❔", u.name, formatNumber(u.amount))
-                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "…"; break end
+                local line = ("**%s** x%s"):format(u.name, formatNumber(u.amount))
+                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "..."; break end
                 lines[#lines + 1] = line
                 bufLen = bufLen + #line + 1
             end
+            local tag = RARITY_TAG[rarity] or "[?]"
             fields[#fields + 1] = {
-                name = ("%s %s — %d unique"):format(RARITY_EMOJI[rarity] or "❔", rarity, #list),
+                name = ("%s %s - %d unique"):format(tag, rarity, #list),
                 value = table.concat(lines, "\n"),
                 inline = false,
             }
@@ -292,14 +263,14 @@ end
 
 local function buildItemFields(inventory)
     local CATEGORIES = {
-        { name = "🎰 Jackpot Spins",  patterns = { "Jackpot Spin" }, emoji = "🎰" },
-        { name = "🍀 Lucky Spins",    patterns = { "Lucky Spin" },   emoji = "🍀" },
-        { name = "🎡 Spins",          patterns = { "^Spin", " Spin$" }, emoji = "🎡" },
-        { name = "💎 Gems",           patterns = { "Gems" },          emoji = "💎" },
-        { name = "🍀 Luck Potions",   patterns = { "Luck" },          emoji = "🍀" },
-        { name = "💰 Income Potions", patterns = { "Income" },        emoji = "💰" },
-        { name = "🎲 Trait Rerolls",  patterns = { "Trait Reroll" },  emoji = "🎲" },
-        { name = "📈 Grade Rerolls",  patterns = { "Grade" },         emoji = "📈" },
+        { name = "Jackpot Spins",  patterns = { "Jackpot Spin" }, tag = "[JP]" },
+        { name = "Lucky Spins",    patterns = { "Lucky Spin" },   tag = "[LUCKY]" },
+        { name = "Spins",          patterns = { "^Spin", " Spin$" }, tag = "[SPIN]" },
+        { name = "Gems",           patterns = { "Gems" },          tag = "[GEMS]" },
+        { name = "Luck Potions",   patterns = { "Luck" },          tag = "[LUCK]" },
+        { name = "Income Potions", patterns = { "Income" },        tag = "[INC]" },
+        { name = "Trait Rerolls",  patterns = { "Trait Reroll" },  tag = "[TRAIT]" },
+        { name = "Grade Rerolls",  patterns = { "Grade" },         tag = "[GRADE]" },
     }
 
     local items = {}
@@ -328,7 +299,7 @@ local function buildItemFields(inventory)
         for _, cat in ipairs(CATEGORIES) do
             for _, pat in ipairs(cat.patterns) do
                 if string.find(it.name, pat) then
-                    grouped[cat.name] = grouped[cat.name] or { emoji = cat.emoji, list = {} }
+                    grouped[cat.name] = grouped[cat.name] or { tag = cat.tag, list = {} }
                     table.insert(grouped[cat.name].list, it)
                     placed = true
                     break
@@ -346,13 +317,13 @@ local function buildItemFields(inventory)
             local lines = {}
             local bufLen = 0
             for _, it in ipairs(g.list) do
-                local line = ("%s **%s** x%s"):format(g.emoji, it.name, formatNumber(it.amount))
-                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "…"; break end
+                local line = ("**%s** x%s"):format(it.name, formatNumber(it.amount))
+                if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "..."; break end
                 lines[#lines + 1] = line
                 bufLen = bufLen + #line + 1
             end
             fields[#fields + 1] = {
-                name = ("%s (%d types)"):format(cat.name, #g.list),
+                name = ("%s %s (%d types)"):format(g.tag, cat.name, #g.list),
                 value = table.concat(lines, "\n"),
                 inline = false,
             }
@@ -363,13 +334,13 @@ local function buildItemFields(inventory)
         local lines = {}
         local bufLen = 0
         for _, it in ipairs(ungrouped) do
-            local line = ("📦 **%s** x%s"):format(it.name, formatNumber(it.amount))
-            if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "…"; break end
+            local line = ("**%s** x%s"):format(it.name, formatNumber(it.amount))
+            if bufLen + #line + 1 > 1000 then lines[#lines + 1] = "..."; break end
             lines[#lines + 1] = line
             bufLen = bufLen + #line + 1
         end
         fields[#fields + 1] = {
-            name = ("📦 Other Items (%d types)"):format(#ungrouped),
+            name = ("[OTHER] Other Items (%d types)"):format(#ungrouped),
             value = table.concat(lines, "\n"),
             inline = false,
         }
@@ -381,7 +352,7 @@ end
 -- Send webhook
 --=====================================================================
 local function sendInventoryWebhook(label)
-    if WEBHOOK_URL == "" or string.find(WEBHOOK_URL, "PASTE_YOUR") then
+    if WEBHOOK_URL == "" then
         warn("[WEBHOOK] No URL configured")
         return false
     end
@@ -399,12 +370,10 @@ local function sendInventoryWebhook(label)
     local playerCount = #Players:GetPlayers()
     local maxPlayers  = Players.MaxPlayers
 
-    -- Discord allows 25 fields max. Server info goes first.
     local allFields = {}
-
     allFields[#allFields + 1] = {
-        name = "🔗 Server Info",
-        value = ("`JobId: %s`\n`Players: %d/%d`\n`Place: %s`"):format(
+        name = "[SERVER] Server Info",
+        value = ("JobId: %s\nPlayers: %d/%d\nPlace: %s"):format(
             srv.jobId, playerCount, maxPlayers, srv.placeId
         ),
         inline = false,
@@ -419,7 +388,6 @@ local function sendInventoryWebhook(label)
         allFields[#allFields + 1] = f
     end
 
-    -- Color from highest-tier rarity present
     local embedColor = 0x2ECC71
     for _, rarity in ipairs(RARITY_ORDER) do
         for _, f in ipairs(unitFields) do
@@ -432,8 +400,8 @@ local function sendInventoryWebhook(label)
     ::done::
 
     local titlePrefix = label
-        and ("📦 Inventory Snapshot — " .. label)
-        or  "📦 Inventory Snapshot"
+        and ("Inventory Snapshot - " .. label)
+        or  "Inventory Snapshot"
 
     local payload = {
         username = "Anime Dice Tracker",
@@ -441,12 +409,12 @@ local function sendInventoryWebhook(label)
             {
                 title       = titlePrefix,
                 url         = srv.webLink,
-                description = ("**%s**\n%d units  •  %d items  •  %d unique unit types"):format(
+                description = ("**%s**\n%d units | %d items | %d unique unit types"):format(
                     LocalPlayer.Name, totalUnits, totalItems, #unitFields
                 ),
                 color     = embedColor,
                 fields    = allFields,
-                footer    = { text = "Anime Dice • " .. os.date("%Y-%m-%d %H:%M:%S") },
+                footer    = { text = "Anime Dice | " .. os.date("%Y-%m-%d %H:%M:%S") },
                 timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
             }
         },
@@ -457,7 +425,7 @@ local function sendInventoryWebhook(label)
                     {
                         type  = 2,
                         style = 5,
-                        label = "🎮 Join Server",
+                        label = "Join Server",
                         url   = srv.webLink,
                     },
                 }
@@ -468,7 +436,7 @@ local function sendInventoryWebhook(label)
     local json = HttpService:JSONEncode(payload)
     local ok, res = httpPost(WEBHOOK_URL, json)
     if not ok then
-        warn("[WEBHOOK] Failed to send: " .. tostring(res))
+        warn("[WEBHOOK] Failed: " .. tostring(res))
         return false
     end
     print("[WEBHOOK] Sent (" .. tostring(label or "snapshot") .. ")")
@@ -540,7 +508,7 @@ local function pickupPlacedUnits()
     for _, item in ipairs(slotList) do
         local rarity = getRarity(item.data)
         if rarity and RARITY_FILTER[rarity] then
-            print(("[PICKUP] Slot %s → %s (%s)"):format(tostring(item.slot), tostring(item.data.name), rarity))
+            print(("[PICKUP] Slot %s -> %s (%s)"):format(tostring(item.slot), tostring(item.data.name), rarity))
             fire(InteractSlot, item.slot)
             removed += 1
             task.wait(PICKUP_DELAY)
@@ -702,7 +670,7 @@ fire(RequestTrade, target)
 local startDeadline = os.clock() + 10
 while not trade.active and os.clock() < startDeadline do task.wait(0.1) end
 if not trade.active then
-    warn("[ERROR] Trade did not start — did the alt accept?")
+    warn("[ERROR] Trade did not start - did the alt accept?")
     return
 end
 print("[MAIN] Trade started")
@@ -719,7 +687,7 @@ print("[MAIN] Offer matches. Waiting for settle...")
 task.wait(OFFER_SETTLE_WAIT)
 
 if not offerMatchesPlan(plan) then
-    warn("[MAIN] Offer changed after settle — re-syncing")
+    warn("[MAIN] Offer changed after settle - re-syncing")
     if not waitForOfferSync(plan, 10) then
         warn("[ERROR] Server keeps rejecting part of the offer")
         fire(CancelTrade)
@@ -740,7 +708,7 @@ while not trade.otherReady and os.clock() < partnerDeadline do
 end
 
 if trade.phase == "Confirm" then
-    print("[MAIN] Phase is Confirm — confirming")
+    print("[MAIN] Phase is Confirm - confirming")
     for _ = 1, READY_MAX_RETRIES do
         if trade.ownAccepted then break end
         fire(AdvanceTrade)
