@@ -1,191 +1,230 @@
--- Anime Dice Auto-Trade (using DataController + EntryRegistry)
--- Based on the pattern from the de-obfuscated script
+--=====================================================================
+-- Anime Dice Auto-Trade — CORRECTED
+-- Uses the game's ClientComm signals (not RemoteEvents).
+--=====================================================================
 
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
+local RS      = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
 
 local TARGET_NAME = "only1Sherifalt1"
-local ADD_DELAY = 0.7
+local ADD_DELAY   = 0.7
 
--- Rarity filter: set to true for rarities you want to send
+-- Rarity strings must match the game's RarityList exactly.
+-- "Secret" is split into two buckets.
 local RARITY_FILTER = {
-	["Celestial"] = true,
-	["Secret I"] = true,
-	["Secret II"] = true,
-	["Mythical"] = true,
+    ["Celestial"] = true,
+    ["Secret I"]  = true,
+    ["Secret II"] = true,
+    ["Mythical"]  = true,
 }
 
--- Consumables to send (if owned)
-local CONSUMABLES = { "Luck III", "Luck II", "Luck I", "Lucky Spin", "Gems", "Luck IV", "Income IV", "Jackpot Spin", "Trait Reroll" }
+-- Consumables to send — matched against entry.name
+local CONSUMABLES = {
+    "Luck III", "Luck II", "Luck I", "Luck IV",
+    "Lucky Spin", "Jackpot Spin",
+    "Gems", "Income IV", "Trait Reroll",
+}
 
--- Get DataController and EntryRegistry
-local DataController = RS.Framework.Features.Data.DataController
-local ok, DC = pcall(require, DataController)
-if not ok then
-	warn("[ERROR] Could not load DataController")
-	return
+--=====================================================================
+-- 1. Framework modules
+--=====================================================================
+local Framework = RS:WaitForChild("Framework")
+local Features  = Framework:WaitForChild("Features")
+local Packages  = RS:FindFirstChild("Packages") or Framework:WaitForChild("Packages")
+local NetworkFolder = RS:FindFirstChild("Network") or Framework:WaitForChild("Network")
+
+local DataController = require(Features.Data.DataController)
+local EntryRegistry  = require(Features.Inventory.EntryRegistry)
+local TradeConfig    = require(Features.Trading.TradeConfig)
+
+--=====================================================================
+-- 2. ClientComm → get TradeService signals
+--=====================================================================
+local NetworkPkg = require(Packages.Network)
+local ClientComm = NetworkPkg.ClientComm
+
+local tradeComm = ClientComm.new(NetworkFolder, false, "TradeService")
+
+local RequestTrade    = tradeComm:GetSignal("RequestTrade")
+local ChangeOffer     = tradeComm:GetSignal("ChangeOffer")
+local AdvanceTrade    = tradeComm:GetSignal("AdvanceTrade")
+local CancelTrade     = tradeComm:GetSignal("CancelTrade")
+
+-- Fire helper — signals have :Fire(...) NOT :FireServer(...)
+local function fire(signal, ...)
+    if not signal then return false end
+    local args = table.pack(...)
+    local ok, err = pcall(function()
+        signal:Fire(table.unpack(args, 1, args.n))
+    end)
+    if not ok then
+        warn("[FIRE FAIL] " .. tostring(err))
+    end
+    return ok
 end
 
-local ER = RS.Framework.Features.Inventory.Kinds.Unit.UnitConfig
-local ok2, EntryRegistry = pcall(require, ER)
-if not ok2 then
-	warn("[ERROR] Could not load EntryRegistry")
-	return
-end
-
--- Unwrap: if value is callable (reactive getter), call it
+--=====================================================================
+-- 3. Inventory unwrap (unchanged from your version — it's correct)
+--=====================================================================
 local function unwrap(value)
-	if type(value) == "function" then
-		local ok, result = pcall(value)
-		return ok and result or nil
-	end
-	local mt = type(value) == "table" and getmetatable(value)
-	if mt and mt.__call then
-		local ok, result = pcall(function() return value() end)
-		return ok and result or value
-	end
-	return value
+    if type(value) == "function" then
+        local ok, result = pcall(value)
+        return ok and result or nil
+    end
+    local mt = type(value) == "table" and getmetatable(value)
+    if mt and mt.__call then
+        local ok, result = pcall(function() return value() end)
+        return ok and result or value
+    end
+    return value
 end
 
--- Deep unwrap: flatten a reactive table + merge cached values
 local function deepUnwrap(source)
-	local out = {}
-	local flat = unwrap(source)
-	if type(flat) == "table" then
-		for k, v in pairs(flat) do
-			out[k] = v
-		end
-	end
-	if type(source) == "table" then
-		local cached = rawget(source, "___C")
-		if type(cached) == "table" then
-			for k, v in pairs(cached) do
-				if out[k] == nil then
-					local inner = unwrap(v)
-					if inner ~= nil then
-						out[k] = inner
-					end
-				end
-			end
-		end
-	end
-	return out
+    local out = {}
+    local flat = unwrap(source)
+    if type(flat) == "table" then
+        for k, v in pairs(flat) do out[k] = v end
+    end
+    if type(source) == "table" then
+        local cached = rawget(source, "___C")
+        if type(cached) == "table" then
+            for k, v in pairs(cached) do
+                if out[k] == nil then
+                    local inner = unwrap(v)
+                    if inner ~= nil then out[k] = inner end
+                end
+            end
+        end
+    end
+    return out
 end
 
--- Get your inventory
-local inventory = deepUnwrap(DC.Inventory)
-if not inventory or type(inventory) ~= "table" then
-	warn("[ERROR] Could not read inventory")
-	return
-end
-
--- Get entry config by name (from EntryRegistry)
-local function getConfig(name)
-	if not EntryRegistry then return nil end
-	return EntryRegistry[name] or nil
-end
-
--- Get rarity of an entry
+--=====================================================================
+-- 4. Rarity resolution
+--=====================================================================
 local function getRarity(entry)
-	if type(entry) ~= "table" or not entry.name then
-		return nil
-	end
-	local cfg = getConfig(entry.name)
-	if not cfg then return nil end
-	
-	-- Try dynamic getRarity function
-	if type(cfg.getRarity) == "function" then
-		local attrs = entry.attributes or {}
-		local ok, rarity = pcall(cfg.getRarity, attrs)
-		if ok and type(rarity) == "string" then
-			return rarity
-		end
-	end
-	
-	-- Fall back to static rarity
-	if type(cfg.rarity) == "string" then
-		return cfg.rarity
-	end
-	return nil
+    if type(entry) ~= "table" or not entry.name then return nil end
+    local cfg = EntryRegistry.getEntryConfig(entry.name)
+    if not cfg then return nil end
+
+    if type(cfg.getRarity) == "function" then
+        local ok, rarity = pcall(cfg.getRarity, entry.attributes or {})
+        if ok and type(rarity) == "string" then return rarity end
+    end
+    if type(cfg.rarity) == "string" then return cfg.rarity end
+    return nil
 end
 
--- Build trade list
+--=====================================================================
+-- 5. Build the offer list
+--=====================================================================
+local inventory = deepUnwrap(DataController.Inventory)
+if type(inventory) ~= "table" then
+    warn("[ERROR] Could not read inventory")
+    return
+end
+
+-- Placed-unit set (so we don't rip units off your plot)
+local placedSet = {}
+do
+    local slots = deepUnwrap(DataController.Slots)
+    if type(slots) == "table" then
+        for _, slot in slots do
+            if type(slot) == "table" and type(slot.unitId) == "string" then
+                placedSet[slot.unitId] = true
+            end
+        end
+    end
+end
+
+-- Build a quick lookup for consumable names
+local wantConsumable = {}
+for _, n in ipairs(CONSUMABLES) do wantConsumable[n] = true end
+
 local toTrade = {}
-local placedUnitIds = {}
 
 print("[SCAN] Building trade offer...")
 
--- 1) Scan for units matching rarity filter
 local unitCount = 0
 for key, entry in pairs(inventory) do
-	if type(key) == "string" and type(entry) == "table" and entry.name then
-		local cfg = getConfig(entry.name)
-		if cfg and cfg.kind == "Unit" then
-			local rarity = getRarity(entry)
-			if rarity and RARITY_FILTER[rarity] then
-				table.insert(toTrade, { key, 1, entry.name .. " (" .. rarity .. ")" })
-				unitCount = unitCount + 1
-				if unitCount <= 5 then
-					print("  [UNIT] " .. entry.name .. " (" .. rarity .. ")")
-				end
-			end
-		end
-	end
-end
-print("[SCAN] Found " .. unitCount .. " matching units")
+    if type(key) == "string" and type(entry) == "table" and entry.name then
+        local cfg = EntryRegistry.getEntryConfig(entry.name)
 
--- 2) Add consumables
-print("[SCAN] Looking for consumables...")
-for _, cname in ipairs(CONSUMABLES) do
-	local item = inventory[cname]
-	if type(item) == "table" and type(item.amount) == "number" and item.amount > 0 then
-		table.insert(toTrade, { cname, item.amount, cname .. " x" .. item.amount })
-		print("  [FOUND] " .. cname .. " x" .. item.amount)
-	end
+        if cfg and cfg.kind == "Unit" then
+            local rarity = getRarity(entry)
+            if rarity and RARITY_FILTER[rarity] then
+                -- Skip locked units
+                local locked = entry.attributes and entry.attributes.locked == true
+                -- Skip placed units
+                local placed = placedSet[entry.unitId] or placedSet[key]
+                if not locked and not placed then
+                    table.insert(toTrade, {
+                        key   = key,
+                        qty   = math.max(1, tonumber(entry.amount) or 1),
+                        label = entry.name .. " (" .. rarity .. ")",
+                        kind  = "Unit"
+                    })
+                    unitCount = unitCount + 1
+                end
+            end
+        elseif wantConsumable[entry.name] then
+            local amt = tonumber(entry.amount) or 0
+            if amt > 0 then
+                table.insert(toTrade, {
+                    key   = key,
+                    qty   = math.floor(amt),
+                    label = entry.name .. " x" .. math.floor(amt),
+                    kind  = "Item"
+                })
+                print("  [FOUND ITEM] " .. entry.name .. " x" .. math.floor(amt))
+            end
+        end
+    end
 end
+
+print("[SCAN] Found " .. unitCount .. " matching units")
+print("[SCAN] Total entries to offer: " .. #toTrade)
 
 if #toTrade == 0 then
-	warn("[ERROR] Nothing to trade!")
-	return
+    warn("[ERROR] Nothing to trade")
+    return
 end
 
--- Get remotes
-local network = RS:FindFirstChild("Network")
-local svc = network and network:FindFirstChild("TradeService")
-local RE = svc and svc:FindFirstChild("RE")
-local RequestTrade = RE and RE:FindFirstChild("RequestTrade")
-local ChangeOffer = RE and RE:FindFirstChild("ChangeOffer")
-local AdvanceTrade = RE and RE:FindFirstChild("AdvanceTrade")
-
-if not (RequestTrade and ChangeOffer and AdvanceTrade) then
-	warn("[ERROR] Trade remotes not found")
-	return
+--=====================================================================
+-- 6. Find target
+--=====================================================================
+local target
+for _, p in Players:GetPlayers() do
+    if p ~= LocalPlayer
+        and (string.lower(p.Name) == string.lower(TARGET_NAME)
+             or string.lower(p.DisplayName) == string.lower(TARGET_NAME))
+    then
+        target = p
+        break
+    end
 end
 
--- Get target
-local target = Players:FindFirstChild(TARGET_NAME)
 if not target then
-	warn("[ERROR] Target not found")
-	return
+    warn("[ERROR] Target not found: " .. TARGET_NAME)
+    return
 end
 
--- Execute trade
-print("[TRADE] Requesting trade with " .. #toTrade .. " items...")
-task.wait(3)
-RequestTrade:FireServer(target)
+--=====================================================================
+-- 7. Execute the trade
+--=====================================================================
+print("[TRADE] Sending request to " .. target.Name)
+fire(RequestTrade, target)
 task.wait(3)
 
-print("[TRADE] Adding items...")
+print("[TRADE] Adding items to offer...")
 for _, item in ipairs(toTrade) do
-	local key, qty, label = item[1], item[2], item[3]
-	local ok, err = pcall(function()
-		ChangeOffer:FireServer(key, qty)
-	end)
-	print(ok and ("[OK] " .. label) or ("[FAIL] " .. label .. ": " .. tostring(err)))
-	task.wait(ADD_DELAY)
+    fire(ChangeOffer, item.key, item.qty)
+    print(("[OK] %s"):format(item.label))
+    task.wait(ADD_DELAY)
 end
 
-print("[TRADE] Advancing...")
+print("[TRADE] Ready / advance")
 task.wait(1)
-AdvanceTrade:FireServer()
-print("[DONE]")
+fire(AdvanceTrade)
+print("[DONE] — click Ready + Confirm on the alt if it's not scripted")
