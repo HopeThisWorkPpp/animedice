@@ -2487,18 +2487,18 @@ local function sendTradeWebhook(label)
   local payload = {
     username = "Zentynal Tracker",
     embeds = {{
-      title = "Inventory Report" .. (label and (" -- " .. label) or ""),
-      url = webLink,
-      description = table.concat(summary, "\n"),
-      color = embedColor,
-      fields = allFields,
-      footer = { text = "Zentynal Hub - " .. os.date("%Y-%m-%d %H:%M:%S") },
-      timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        title = "Inventory Report" .. (label and (" -- " .. label) or ""),
+        url = webLink,
+        description = table.concat(summary, "\n"),
+        color = embedColor,
+        fields = allFields,
+        footer = { text = "Zentynal Hub - " .. os.date("%Y-%m-%d %H:%M:%S") },
+        timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
     }},
     components = {{ type = 1, components = {
-      { type = 2, style = 5, label = "Join This Server", url = webLink },
+        { type = 2, style = 5, label = "Join This Server", url = webLink },
     }}},
-  }
+}
   return (tradeHttpPost(WEBHOOK_URL, httpService:JSONEncode(payload)))
 end
 
