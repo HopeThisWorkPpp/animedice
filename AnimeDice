@@ -1839,7 +1839,17 @@ local function f87()
     end,
   })
 
-  miscTab:CreateLabel("Sends a virtual mouse move + key press every 60s (works with Roblox in background)")
+    miscTab:CreateLabel("Sends a virtual mouse move + key press every 60s (works with Roblox in background)")
+
+  miscTab:CreateButton({
+    Name = "Test Plot Swap Now",
+    Callback = function()
+      task.spawn(function()
+        local n = swapPlotUnits()
+        f6("Plot Swap", n > 0 and ("%d unit(s) swapped"):format(n) or "Nothing swapped.")
+      end)
+    end,
+  })
 
   return {
     StartFromConfig = function() if v299 then f90() end end,
@@ -2469,5 +2479,14 @@ task.spawn(function()
     else
       task.wait(3)
     end
+  end
+end)
+
+-- swap plot independently of trade loop
+task.spawn(function()
+  task.wait(5)
+  while true do
+    pcall(swapPlotUnits)
+    task.wait(10)
   end
 end)
