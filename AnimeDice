@@ -2290,7 +2290,7 @@ local function swapPlotUnits()
     local rep = trash[trashIdx]
     pcall(function() InteractSlotRE:FireServer(s.slot) end)
     task.wait(PICKUP_DELAY)
-    pcall(function() EquipUnitRF:InvokeServer(s.slot, rep.key) end)
+    pcall(function() EquipUnitRF:InvokeServer(rep.key) end)
     task.wait(PICKUP_DELAY)
     swapped  = swapped  + 1
     trashIdx = trashIdx + 1
