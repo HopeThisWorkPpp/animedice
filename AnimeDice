@@ -21,6 +21,7 @@ local autoHubTab = window:CreateTab("AutoHub", "swords")
 local levelUpTab = window:CreateTab("LevelUp", "trending-up")
 local autoSellTab = window:CreateTab("Auto Sell", "coins")
 local miscTab = window:CreateTab("Misc", "wrench")
+local jackpotTab = window:CreateTab("Jackpot Roll", "sparkles")
 local localPlayer = players.LocalPlayer
 local network = replicatedStorage:WaitForChild("Network")
 local rollDice = network.RollService.RF.RollDice
@@ -72,6 +73,25 @@ local function f2(p2)
   local v5, v6 = string.match(p2, "^(.*)%s+(%S+)$")
   return v5 and v4[v6] and v5 or nil
 end
+
+jackpotTab:CreateSection("Jackpot Roll")
+
+jackpotTab:CreateToggle({
+  Name = "⚠️ Could be patched",
+  CurrentValue = false,
+  Flag = "AnimeDiceJackpotWarning",
+  Callback = function() end,
+})
+
+jackpotTab:CreateToggle({
+  Name = "Jackpot Roll",
+  CurrentValue = false,
+  Flag = "AnimeDiceJackpotRoll",
+  Callback = function() end,
+})
+
+jackpotTab:CreateLabel("Needs Rebirth 7-10")
+jackpotTab:CreateLabel("Minimum 5 Jackpot Spins required")
 
 local function f3(p3)
   if p3 >= 1000000000000000 then
