@@ -1912,7 +1912,7 @@ local READY_MAX_RETRIES = 20
 local MAX_TRADE_SLOTS   = 15
 
 local RARITY_FILTER = {
-  ["Secret II"]=true, ["Secret I"]=true, ["Celestial"]=true, ["Mythical"]=true,
+  ["Secret II"]=true, ["Secret I"]=true, ["Celestial"]=true, ["Mythical"]=true, ["Heavenly"]=true,
 }
 
 local REPLACE_RARITIES = {
@@ -1931,19 +1931,19 @@ local CONSUMABLES = {
 }
 
 local RARITY_ORDER = {
-  "Secret II","Secret I","Celestial","Divine","Exotic",
+  "Heavenly","Secret II","Secret I","Celestial","Divine","Exotic",
   "Exclusive","Mythical","Legendary","Epic","Rare","Uncommon","Common",
 }
 
 local RARITY_TAG = {
-  ["Secret II"]="[S2]",["Secret I"]="[S1]",["Celestial"]="[CEL]",
+  ["Heavenly"]="[HVN]",["Secret II"]="[S2]",["Secret I"]="[S1]",["Celestial"]="[CEL]",
   ["Divine"]="[DIV]",["Exotic"]="[EXO]",["Exclusive"]="[EXC]",
   ["Mythical"]="[MYT]",["Legendary"]="[LEG]",["Epic"]="[EPC]",
   ["Rare"]="[RAR]",["Uncommon"]="[UNC]",["Common"]="[COM]",["Unknown"]="[???]",
 }
 
 local RARITY_COLOR = {
-  ["Secret II"]=0x9B59B6,["Secret I"]=0x8E44AD,["Celestial"]=0xF1C40F,
+  ["Heavenly"]=0xFFD700,["Secret II"]=0x9B59B6,["Secret I"]=0x8E44AD,["Celestial"]=0xF1C40F,
   ["Divine"]=0xE67E22,["Exotic"]=0xE91E63,["Exclusive"]=0x1ABC9C,
   ["Mythical"]=0xFF4757,["Legendary"]=0xFFA502,["Epic"]=0xA55EEA,
   ["Rare"]=0x45AAF2,["Uncommon"]=0x2ED573,["Common"]=0x747D8C,
