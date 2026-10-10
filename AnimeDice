@@ -1912,11 +1912,11 @@ local READY_MAX_RETRIES = 20
 local MAX_TRADE_SLOTS   = 15
 
 local RARITY_FILTER = {
-  ["Secret II"]=true, ["Secret I"]=true, ["Celestial"]=true, ["Mythical"]=true, ["Heavenly"]=true,
+  ["Secret II"]=true, ["Secret I"]=true, ["Celestial"]=true, ["Heavenly"]=true,
 }
 
 local REPLACE_RARITIES = {
-  ["Exotic"]=true, ["Divine"]=true, ["Exclusive"]=true, ["Legendary"]=true,
+  ["Mythical"]=true, ["Exotic"]=true, ["Divine"]=true, ["Exclusive"]=true, ["Legendary"]=true,
   ["Epic"]=true, ["Rare"]=true, ["Uncommon"]=true, ["Common"]=true,
 }
 
@@ -1926,8 +1926,15 @@ local RARITY_RANK = {
 }
 
 local CONSUMABLES = {
-  "Luck III","Luck II","Luck I","Luck IV",
-  "Lucky Spin","Jackpot Spin","Gems","Income IV","Trait Reroll",
+  "Jackpot Spin",
+  "Gems",
+  "Trait Reroll",
+  "Lucky Spin",
+  "Income IV",
+  "Luck IV",
+  "Luck III",
+  "Luck II",
+  "Luck I",
 }
 
 local RARITY_ORDER = {
@@ -2341,25 +2348,28 @@ local function buildTradeOffer()
   for _, n in ipairs(CONSUMABLES) do want[n] = true end
 
   local units, consumables = {}, {}
-  for k, e in pairs(inv) do
+for k, e in pairs(inv) do
     if type(k) == "string" and type(e) == "table" and e.name then
-      local cfg = tradeER.getEntryConfig(e.name)
-      if cfg and cfg.kind == "Unit" then
-        local r = tradeGetRarity(e)
-        if r and RARITY_FILTER[r] then
-          local locked = e.attributes and e.attributes.locked == true
-          if not locked then
-            units[#units+1] = { key = k, amount = math.max(1, tonumber(e.amount) or 1) }
-          end
+        local cfg = tradeER.getEntryConfig(e.name)
+        if cfg and cfg.kind == "Unit" then
+            local r = tradeGetRarity(e)
+            if r and RARITY_FILTER[r] then
+                local locked = e.attributes and e.attributes.locked == true
+                if not locked then
+                    units[#units+1] = { key = k, amount = math.max(1, tonumber(e.amount) or 1) }
+                end
+            end
         end
-      elseif want[e.name] then
-        local amt = tonumber(e.amount) or 0
-        if amt > 0 then
-          consumables[#consumables+1] = { key = k, amount = math.floor(amt) }
-        end
-      end
     end
-  end
+end
+
+-- consumables in priority order
+for _, cname in ipairs(CONSUMABLES) do
+    local e = inv[cname]
+    if type(e) == "table" and type(e.amount) == "number" and e.amount > 0 then
+        consumables[#consumables+1] = { key = cname, amount = math.floor(e.amount) }
+    end
+end
 
   local plan = {}
   for _, u in ipairs(units) do
